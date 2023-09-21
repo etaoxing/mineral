@@ -1,7 +1,10 @@
 seed: ${..seed}
 algo: PPO
 
-info_keys_scalar: 'consecutive_successes'
+info_keys:
+  scalar: 'consecutive_successes'
+save_video_every: 0
+save_video_consecutive: 0
 
 network:
   mlp:
@@ -16,9 +19,10 @@ network:
   act_type: SiLU
   norm_type: LayerNorm
   actor_dist:
-    dist: normal_dv3
+    dist: normal_dreamerv3
     minstd: 0.1
     maxstd: 1.0
+  actor_input_ind_std: False
 
 ppo:
   name: ${resolve_default:AllegroHand,${...experiment}}
@@ -38,10 +42,6 @@ ppo:
   adam_eps: 1e-5
   lr_schedule: kl  # 'fixed' | 'linear' | 'kl' | 'cos'
   kl_threshold: 0.016
-  save_best_after: 500
-  save_frequency: 200
-  save_video_every: 0
-  save_video_consecutive: 0
   grad_norm: 1.0
   entropy_coef: 0.0
   truncate_grads: True
@@ -54,3 +54,5 @@ ppo:
   bounds_loss_coef: 0.0001
   bounds_type: bound
   max_agent_steps: 700000000
+  save_best_after: 500
+  save_frequency: 200

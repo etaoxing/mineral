@@ -1,10 +1,12 @@
-import sys, os
 import functools
+import os
 import pprint
-import yaml
-import numpy as np
+import sys
+
 import hydra
+import numpy as np
 import wandb
+import yaml
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 from termcolor import cprint
@@ -16,19 +18,22 @@ def make_envs(config):
 
 def import_isaacgym():
     # https://github.com/NVlabs/sim-web-visualizer/blob/main/example/isaacgym/train_isaacgym_remote_server.ipynb
-    import os, sys
-    from pathlib import Path
+    import os
+    import sys
     from ctypes import cdll
+    from pathlib import Path
 
     is_conda = 'CONDA_PREFIX' in os.environ or 'CONDA_DEFAULT_ENV' in os.environ
     if is_conda:
         version_info = sys.version_info
         if version_info.major == 3 and version_info.minor >= 8:
-            conda_lib_path = Path(
-                sys.executable).parent.parent / f"lib/libpython{version_info.major}.{version_info.minor}.so.1.0"
+            conda_lib_path = (
+                Path(sys.executable).parent.parent / f"lib/libpython{version_info.major}.{version_info.minor}.so.1.0"
+            )
         else:
-            conda_lib_path = Path(
-                sys.executable).parent.parent / f"lib/libpython{version_info.major}.{version_info.minor}m.so.1.0"
+            conda_lib_path = (
+                Path(sys.executable).parent.parent / f"lib/libpython{version_info.major}.{version_info.minor}m.so.1.0"
+            )
         python_lib = cdll.LoadLibrary(str(conda_lib_path))
         print(f"Load Python lib {conda_lib_path}")
 
@@ -46,7 +51,6 @@ def make_isaacgym_envs(config):
     # set virtual_screen_capture=True and headless=False to get IsaacGym GUI window
     # if you get `OSError: Pillow was built without XCB support`, then `pip install -U Pillow`
     # (switch to pip instead of conda package)  # https://stackoverflow.com/a/66682282
-
     # TODO: https://github.com/NVlabs/sim-web-visualizer/tree/main/example/isaacgym
 
     if config.env_render:
@@ -76,7 +80,11 @@ def save_run_metadata(logdir, run_name, run_id, resolved_config):
     yaml.dump(resolved_config, open(os.path.join(logdir, 'resolved_config.yaml'), 'w'), default_flow_style=False)
 
 
-@hydra.main(config_name='config', config_path='configs', version_base='1.1')
+@hydra.main(
+    config_name='config',
+    config_path=os.path.join(os.path.abspath(os.path.dirname(__file__)), '../cfgs'),
+    version_base='1.1',
+)
 def main(config: DictConfig):
     if config.checkpoint:
         config.checkpoint = to_absolute_path(config.checkpoint)
@@ -85,6 +93,7 @@ def main(config: DictConfig):
         from isaacgymenvs.utils.utils import set_np_formatting, set_seed
     else:
         from .utils import set_np_formatting, set_seed
+
     from .utils import limit_threads
 
     limit_threads(1)
@@ -92,7 +101,7 @@ def main(config: DictConfig):
     # set numpy formatting for printing only
     set_np_formatting()
 
-    if config.train.ppo.multi_gpu:
+    if config.agent.ppo.multi_gpu:
         rank = int(os.getenv('LOCAL_RANK', '0'))
         # torchrun --standalone --nnodes=1 --nproc_per_node=2 train.py
         config.sim_device = f'cuda:{rank}'
@@ -117,9 +126,10 @@ def main(config: DictConfig):
     logdir = config.logdir
     os.makedirs(logdir, exist_ok=True)
 
-    from .ppo.ppo import PPO
+    from ..agents.ppo.ppo import PPO
 
-    agent = PPO(env, logdir, full_config=config)
+    agent = PPO(env, logdir, config)
+
     if config.test:
         if config.checkpoint:
             agent.restore_test(config.checkpoint)
@@ -146,8 +156,6 @@ def main(config: DictConfig):
         wandb.finish()
 
 
+import_isaacgym()  # uncomment for isaacgym (need to import before torch)
 if __name__ == '__main__':
-    # uncomment for isaacgym (need to import before torch)
-    import_isaacgym()
-
     main()

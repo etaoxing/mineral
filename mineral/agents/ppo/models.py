@@ -1,10 +1,10 @@
-import re
-
 import numpy as np
 import torch
+import torch.distributions as D
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributions as D
+
+from ..nets import MultiEncoder
 
 
 class MLP(nn.Module):
@@ -33,124 +33,17 @@ class MLP(nn.Module):
 
     @staticmethod
     def init_weights(sequential, scales):
-        [torch.nn.init.orthogonal_(module.weight, gain=scales[idx]) for idx, module in
-         enumerate(mod for mod in sequential if isinstance(mod, nn.Linear))]
-
-
-class MultiEncoder(nn.Module):
-    def __init__(self, obs_space, config):
-        super().__init__()
-        cnn_keys = config.encoder.get('cnn_keys', '$^')
-        pcd_keys = config.encoder.get('pcd_keys', '$^')
-        mlp_keys = config.encoder.get('mlp_keys', '$^')
-
-        excluded = {}
-        shapes = {k: v for k, v in obs_space.items() if k not in excluded and not k.startswith('info_')}
-        print('Encoder input shapes:', shapes)
-        self.cnn_shapes = {k: v for k, v in shapes.items() if (len(v) == 3 and re.match(cnn_keys, k))}
-        self.pcd_shapes = {k: v for k, v in shapes.items() if (len(v) == 2 and re.match(pcd_keys, k))}
-        self.mlp_shapes = {k: v for k, v in shapes.items() if (len(v) in (1, 2) and re.match(mlp_keys, k))}
-        self.shapes = {**self.cnn_shapes, **self.pcd_shapes, **self.mlp_shapes}
-        print('Encoder CNN shapes:', self.cnn_shapes)
-        print('Encoder PCD shapes:', self.pcd_shapes)
-        print('Encoder MLP shapes:', self.mlp_shapes)
-
-        self.out_dim = 0
-        self.out_dim_local = None
-        if self.cnn_shapes:
-            cnn, cnn_kwargs = config.encoder.cnn, config.encoder.cnn_kwargs
-
-            if cnn == 'resnet':
-                raise NotImplementedError
-            else:
-                raise NotImplementedError(cnn)
-
-        if self.pcd_shapes:
-            pcd, pcd_kwargs = config.encoder.pcd, config.encoder.pcd_kwargs
-
-            if pcd == 'pointnet2':
-                raise NotImplementedError
-            else:
-                raise NotImplementedError(pcd)
-        if self.mlp_shapes:
-            tensor_shape = sum([np.prod(v, dtype=int) for v in self.mlp_shapes.values()]).item()
-            self.out_dim += tensor_shape
-        print('Encoder out_dim:', self.out_dim)
-
-    def cnn(self, x):
-        inputs = torch.cat([x[k] for k in self.cnn_shapes], -1)
-        output = self._cnn(inputs)
-        output = output.reshape((output.shape[0], -1))
-        return output
-
-    def pcd(self, x):
-        _pos = torch.cat([x[k] for k in self.pcd_shapes], -2)
-        _x = None
-        _batch = torch.arange(_pos.shape[0], device=_pos.device).repeat_interleave(_pos.shape[1])
-        B, D = _pos.shape[:2]
-        _pos = _pos.reshape(-1, *_pos.shape[2:])
-        data = dict(x=_x, pos=_pos, batch=_batch)
-
-        inputs = self._pcd_transforms(data)
-        global_z, local_z = self._pcd(inputs)
-        del inputs
-        local_z = local_z.reshape(B, D, -1)
-        return global_z, local_z
-
-    def forward(self, x):
-        outputs = {}
-        outputs_local = None
-        if self.cnn_shapes:
-            outputs['cnn'] = self.cnn(x)
-
-        if self.pcd_shapes:
-            global_z, local_z = self.pcd(x)
-            outputs['pcd'] = global_z
-            outputs_local = local_z
-
-        if self.mlp_shapes:
-            inputs = [x[k][..., None] if len(self.shapes[k]) == 0 else x[k] for k in self.mlp_shapes]
-            inputs = torch.cat([x.reshape(x.shape[0], -1) for x in inputs], -1)
-            outputs['mlp'] = inputs
-
-        outputs = torch.cat(list(outputs.values()), -1)
-        return outputs, outputs_local
-
-
-class Dist(nn.Module):
-    def __init__(
-        self,
-        dist='normal',
-        minstd=1.0,
-        maxstd=1.0,
-    ):
-        super().__init__()
-        self._dist = dist
-        self._minstd = minstd
-        self._maxstd = maxstd
-
-    def forward(self, mu, logstd):
-        if self._dist == 'normal':
-            sigma = torch.exp(logstd)
-            distr = D.Normal(mu, sigma)
-        elif self._dist == 'normal_dv3':
-            lo, hi = self._minstd, self._maxstd
-            std = (hi - lo) * torch.sigmoid(logstd + 2.0) + lo
-            mu = torch.tanh(mu)
-            distr = D.Normal(mu, std)
-            sigma = std
-        else:
-            raise NotImplementedError
-        return mu, sigma, distr
-
-    def __repr__(self):
-        return f'Dist(dist={self._dist})'
+        [
+            torch.nn.init.orthogonal_(module.weight, gain=scales[idx])
+            for idx, module in enumerate(mod for mod in sequential if isinstance(mod, nn.Linear))
+        ]
 
 
 class ActorCritic(nn.Module):
     def __init__(self, obs_space, actions_dim, config):
         super().__init__()
         self.separate_value_mlp = config.separate_value_mlp
+        self.actor_input_ind_std = config.actor_input_ind_std
         self.act_type = config.act_type
         self.norm_type = config.norm_type
         self.units = config.mlp.units
@@ -168,8 +61,11 @@ class ActorCritic(nn.Module):
             self.value_mlp = MLP(input_size=mlp_in_dim, units=self.units, act_type=self.act_type, norm_type=self.norm_type)
         self.value = torch.nn.Linear(out_size, 1)
         self.mu = torch.nn.Linear(out_size, actions_dim)
-        self.sigma = nn.Parameter(
-            torch.zeros(actions_dim, requires_grad=True, dtype=torch.float32), requires_grad=True)
+
+        if self.actor_input_ind_std:
+            self.sigma = nn.Parameter(torch.zeros(actions_dim, requires_grad=True, dtype=torch.float32), requires_grad=True)
+        else:
+            self.sigma = torch.nn.Linear(out_size, actions_dim)
 
         actor_dist_config = config.get('actor_dist', {})
         self.dist = Dist(**actor_dist_config)
@@ -196,9 +92,13 @@ class ActorCritic(nn.Module):
 
         # value output layer with scale 1
         # policy output layer with scale 0.01
-        torch.nn.init.orthogonal_(self.value.weight, gain=1.0)
-        torch.nn.init.orthogonal_(self.mu.weight, gain=0.01)
-        nn.init.constant_(self.sigma, 0)
+        nn.init.orthogonal_(self.value.weight, gain=1.0)
+        nn.init.orthogonal_(self.mu.weight, gain=0.01)
+        if self.actor_input_ind_std:
+            nn.init.constant_(self.sigma, 0)
+        else:
+            nn.init.orthogonal_(self.sigma.weight, gain=0.01)
+            nn.init.zeros_(self.sigma.bias)
 
     def forward(self, input_dict):
         prev_actions = input_dict.get('prev_actions', None)
@@ -256,6 +156,38 @@ class ActorCritic(nn.Module):
             x = self.value_mlp(z)
         value = self.value(x)
 
-        sigma = self.sigma
+        if self.actor_input_ind_std:
+            sigma = self.sigma
+        else:
+            sigma = self.sigma(x)
         return mu, mu * 0 + sigma, value
 
+
+class Dist(nn.Module):
+    def __init__(
+        self,
+        dist='normal',
+        minstd=1.0,
+        maxstd=1.0,
+    ):
+        super().__init__()
+        self._dist = dist
+        self._minstd = minstd
+        self._maxstd = maxstd
+
+    def forward(self, mu, logstd):
+        if self._dist == 'normal':
+            sigma = torch.exp(logstd)
+            distr = D.Normal(mu, sigma)
+        elif self._dist == 'normal_dreamerv3':
+            lo, hi = self._minstd, self._maxstd
+            std = (hi - lo) * torch.sigmoid(logstd + 2.0) + lo
+            mu = torch.tanh(mu)
+            distr = D.Normal(mu, std)
+            sigma = std
+        else:
+            raise NotImplementedError
+        return mu, sigma, distr
+
+    def __repr__(self):
+        return f'Dist(dist={self._dist})'

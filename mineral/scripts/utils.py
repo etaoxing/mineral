@@ -1,15 +1,15 @@
-import os, sys
+import os
+import sys
 from typing import Dict
 
-from omegaconf import DictConfig, OmegaConf
 import numpy as np
-
+from omegaconf import DictConfig, OmegaConf
 
 try:
-    OmegaConf.register_new_resolver('eq', lambda x, y: x.lower()==y.lower())
+    OmegaConf.register_new_resolver('eq', lambda x, y: x.lower() == y.lower())
     OmegaConf.register_new_resolver('contains', lambda x, y: x.lower() in y.lower())
     OmegaConf.register_new_resolver('if', lambda pred, a, b: a if pred else b)
-    OmegaConf.register_new_resolver('resolve_default', lambda default, arg: default if arg=='' else arg)
+    OmegaConf.register_new_resolver('resolve_default', lambda default, arg: default if arg == '' else arg)
 except:
     pass  # ignore if already registered
 
@@ -26,13 +26,15 @@ def omegaconf_to_dict(d: DictConfig) -> Dict:
 
 
 def set_np_formatting():
-    """ formats numpy print """
-    np.set_printoptions(edgeitems=30, infstr='inf',
-                        linewidth=4000, nanstr='nan', precision=2,
-                        suppress=False, threshold=10000, formatter=None)
+    """formats numpy print"""
+    np.set_printoptions(
+        edgeitems=30, infstr='inf', linewidth=4000, nanstr='nan', precision=2, suppress=False, threshold=10000, formatter=None
+    )
+
 
 def set_seed(seed, torch_deterministic=False, rank=0):
     import random
+
     import numpy as np
     import torch
 
