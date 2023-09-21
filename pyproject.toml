@@ -1,0 +1,21 @@
+[tool.black]
+line-length = 127
+skip-string-normalization = true
+target-version = ['py37']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    __pycache__
+  | \.git
+  | \.pytest_cache
+  | \.vscode
+  | docs
+  | build
+  | third_party
+)/
+'''
+
+[tool.pyright]
+exclude = [
+    "third_party/"
+]
