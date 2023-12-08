@@ -24,12 +24,12 @@ class PPO(ActorCriticBase):
 
         # ---- Normalizer ----
         if self.normalize_input:
-            self.running_mean_std = {
+            self.obs_rms = {
                 k: RunningMeanStd(v) if re.match(self.input_keys_normalize, k) else nn.Identity()
                 for k, v in self.obs_space.items()
             }
-            self.running_mean_std = nn.ModuleDict(self.running_mean_std).to(self.device)
-            print('RunningMeanStd:', self.running_mean_std)
+            self.obs_rms = nn.ModuleDict(self.obs_rms).to(self.device)
+            print('obs_rms:', self.obs_rms)
         # ---- Model ----
         encoder, encoder_kwargs = self.network_config.get('encoder', None), self.network_config.get('encoder_kwargs', None)
         ModelCls = getattr(models, self.network_config.get('actor_critic', 'ActorCritic'))
@@ -99,26 +99,26 @@ class PPO(ActorCriticBase):
             # TODO: prepare scheduler
 
             if self.normalize_input:
-                self.running_mean_std = self.accelerator.prepare(self.running_mean_std)
+                self.obs_rms = self.accelerator.prepare(self.obs_rms)
             if self.normalize_value:
                 self.value_mean_std = self.accelerator.prepare(self.value_mean_std)
 
     def set_eval(self):
         self.model.eval()
         if self.normalize_input:
-            self.running_mean_std.eval()
+            self.obs_rms.eval()
         if self.normalize_value:
             self.value_mean_std.eval()
 
     def set_train(self):
         self.model.train()
         if self.normalize_input:
-            self.running_mean_std.train()
+            self.obs_rms.train()
         if self.normalize_value:
             self.value_mean_std.train()
 
     def model_act(self, obs_dict):
-        input_dict = {k: self.running_mean_std[k](obs_dict[k]) for k in self.running_mean_std.keys()}
+        input_dict = {k: self.obs_rms[k](obs_dict[k]) for k in self.obs_rms.keys()}
         model_out = self.model.act(input_dict)
         model_out['values'] = self.value_mean_std(model_out['values'], True)
         return model_out
@@ -199,7 +199,7 @@ class PPO(ActorCriticBase):
                 if not isinstance(obs_dict, dict):
                     obs_dict = {'obs': obs_dict}
 
-                input_dict = {k: self.running_mean_std[k](obs_dict[k]) for k in self.running_mean_std.keys()}
+                input_dict = {k: self.obs_rms[k](obs_dict[k]) for k in self.obs_rms.keys()}
                 batch_dict = {
                     'prev_actions': actions,
                     **input_dict,
@@ -304,7 +304,7 @@ class PPO(ActorCriticBase):
         self.set_eval()
         obs_dict = self.env.reset()
         while True:
-            input_dict = {k: self.running_mean_std[k](obs_dict[k]) for k in self.running_mean_std.keys()}
+            input_dict = {k: self.obs_rms[k](obs_dict[k]) for k in self.obs_rms.keys()}
             mu = self.model.act(input_dict, sample=False)
             mu = torch.clamp(mu, -1.0, 1.0)
             obs_dict, r, done, info = self.env.step(mu)
@@ -376,7 +376,7 @@ class PPO(ActorCriticBase):
             'model': self.model.state_dict(),
         }
         if self.normalize_input:
-            ckpt['running_mean_std'] = self.running_mean_std.state_dict()
+            ckpt['obs_rms'] = self.obs_rms.state_dict()
         if self.normalize_value:
             ckpt['value_mean_std'] = self.value_mean_std.state_dict()
         torch.save(ckpt, f)
@@ -386,7 +386,7 @@ class PPO(ActorCriticBase):
         ckpt = torch.load(f, map_location=self.device)
         self.model.load_state_dict(ckpt['model'])
         if self.normalize_input:
-            self.running_mean_std.load_state_dict(ckpt['running_mean_std'])
+            self.obs_rms.load_state_dict(ckpt['obs_rms'])
         if self.normalize_value:
             self.value_mean_std.load_state_dict(ckpt['value_mean_std'])
         # TODO: accelerator.load
