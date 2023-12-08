@@ -37,7 +37,7 @@ class PPO(ActorCriticBase):
         self.model = ModelCls(self.obs_space, self.action_dim, encoder=encoder, encoder_kwargs=encoder_kwargs, **model_kwargs)
         self.model.to(self.device)
         print(self.model, '\n')
-        self.value_mean_std = RunningMeanStd((1,)).to(self.device)
+        self.value_rms = RunningMeanStd((1,)).to(self.device)
         # ---- Optim ----
         optim_kwargs = self.ppo_config.get('optim_kwargs', {})
         learning_rate = optim_kwargs.get('lr', 3e-4)
@@ -101,26 +101,26 @@ class PPO(ActorCriticBase):
             if self.normalize_input:
                 self.obs_rms = self.accelerator.prepare(self.obs_rms)
             if self.normalize_value:
-                self.value_mean_std = self.accelerator.prepare(self.value_mean_std)
+                self.value_rms = self.accelerator.prepare(self.value_rms)
 
     def set_eval(self):
         self.model.eval()
         if self.normalize_input:
             self.obs_rms.eval()
         if self.normalize_value:
-            self.value_mean_std.eval()
+            self.value_rms.eval()
 
     def set_train(self):
         self.model.train()
         if self.normalize_input:
             self.obs_rms.train()
         if self.normalize_value:
-            self.value_mean_std.train()
+            self.value_rms.train()
 
     def model_act(self, obs_dict):
         input_dict = {k: self.obs_rms[k](obs_dict[k]) for k in self.obs_rms.keys()}
         model_out = self.model.act(input_dict)
-        model_out['values'] = self.value_mean_std(model_out['values'], True)
+        model_out['values'] = self.value_rms(model_out['values'], True)
         return model_out
 
     def train(self):
@@ -361,10 +361,10 @@ class PPO(ActorCriticBase):
         returns = self.storage.data_dict['returns']
         values = self.storage.data_dict['values']
         if self.normalize_value:
-            self.value_mean_std.train()
-            values = self.value_mean_std(values)
-            returns = self.value_mean_std(returns)
-            self.value_mean_std.eval()
+            self.value_rms.train()
+            values = self.value_rms(values)
+            returns = self.value_rms(returns)
+            self.value_rms.eval()
         self.storage.data_dict['values'] = values
         self.storage.data_dict['returns'] = returns
 
@@ -378,7 +378,7 @@ class PPO(ActorCriticBase):
         if self.normalize_input:
             ckpt['obs_rms'] = self.obs_rms.state_dict()
         if self.normalize_value:
-            ckpt['value_mean_std'] = self.value_mean_std.state_dict()
+            ckpt['value_rms'] = self.value_rms.state_dict()
         torch.save(ckpt, f)
         # TODO: accelerator.save
 
@@ -388,7 +388,7 @@ class PPO(ActorCriticBase):
         if self.normalize_input:
             self.obs_rms.load_state_dict(ckpt['obs_rms'])
         if self.normalize_value:
-            self.value_mean_std.load_state_dict(ckpt['value_mean_std'])
+            self.value_rms.load_state_dict(ckpt['value_rms'])
         # TODO: accelerator.load
 
 
