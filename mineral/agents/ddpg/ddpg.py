@@ -307,16 +307,16 @@ class DDPG(ActorCriticBase):
         self.critic.eval()
         self.actor_target.eval()
         self.critic_target.eval()
-
-        self.obs_rms.eval()
+        if self.normalize_input:
+            self.obs_rms.eval()
 
     def set_train(self):
         self.actor.train()
         self.critic.train()
         self.actor_target.train()
         self.critic_target.train()
-
-        self.obs_rms.eval()
+        if self.normalize_input:
+            self.obs_rms.train()
 
     def save(self, f):
         pass
