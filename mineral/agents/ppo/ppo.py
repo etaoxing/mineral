@@ -8,10 +8,11 @@ import torch
 import torch.nn as nn
 
 from ...common.reward_shaper import RewardShaper
+from ...common.running_mean_std import RunningMeanStd
 from ..actorcritic_base import ActorCriticBase
 from . import models
 from .experience import ExperienceBuffer
-from .utils import AdaptiveScheduler, LinearScheduler, RunningMeanStd, adjust_learning_rate_cos
+from .utils import AdaptiveScheduler, LinearScheduler, adjust_learning_rate_cos
 
 
 class PPO(ActorCriticBase):
@@ -24,12 +25,16 @@ class PPO(ActorCriticBase):
 
         # ---- Normalizer ----
         if self.normalize_input:
-            self.obs_rms = {
-                k: RunningMeanStd(v) if re.match(self.input_keys_normalize, k) else nn.Identity()
-                for k, v in self.obs_space.items()
-            }
+            self.obs_rms = {}
+            for k, v in self.obs_space.items():
+                if re.match(self.input_keys_normalize, k):
+                    self.obs_rms[k] = RunningMeanStd(v, eps=1e-5, with_clamp=True, initial_count=1, dtype=torch.float64)
+                else:
+                    self.obs_rms[k] = nn.Identity()
             self.obs_rms = nn.ModuleDict(self.obs_rms).to(self.device)
-            print('obs_rms:', self.obs_rms)
+        else:
+            self.obs_rms = None
+        print('obs_rms:', self.obs_rms)
         # ---- Model ----
         encoder, encoder_kwargs = self.network_config.get('encoder', None), self.network_config.get('encoder_kwargs', None)
         ModelCls = getattr(models, self.network_config.get('actor_critic', 'ActorCritic'))
@@ -37,7 +42,7 @@ class PPO(ActorCriticBase):
         self.model = ModelCls(self.obs_space, self.action_dim, encoder=encoder, encoder_kwargs=encoder_kwargs, **model_kwargs)
         self.model.to(self.device)
         print(self.model, '\n')
-        self.value_rms = RunningMeanStd((1,)).to(self.device)
+        self.value_rms = RunningMeanStd((1,), eps=1e-5, with_clamp=True, initial_count=1, dtype=torch.float64).to(self.device)
         # ---- Optim ----
         optim_kwargs = self.ppo_config.get('optim_kwargs', {})
         learning_rate = optim_kwargs.get('lr', 3e-4)
@@ -118,9 +123,11 @@ class PPO(ActorCriticBase):
             self.value_rms.train()
 
     def model_act(self, obs_dict):
-        input_dict = {k: self.obs_rms[k](obs_dict[k]) for k in self.obs_rms.keys()}
-        model_out = self.model.act(input_dict)
-        model_out['values'] = self.value_rms(model_out['values'], True)
+        if self.normalize_input:
+            obs_dict = {k: self.obs_rms[k].normalize(v) for k, v in obs_dict.items()}
+        model_out = self.model.act(obs_dict)
+        if self.normalize_value:
+            model_out['values'] = self.value_rms.unnormalize(model_out['values'])
         return model_out
 
     def train(self):
@@ -199,7 +206,13 @@ class PPO(ActorCriticBase):
                 if not isinstance(obs_dict, dict):
                     obs_dict = {'obs': obs_dict}
 
-                input_dict = {k: self.obs_rms[k](obs_dict[k]) for k in self.obs_rms.keys()}
+                if self.normalize_input:
+                    input_dict = {}
+                    for k, v in obs_dict.items():
+                        self.obs_rms[k].update(v)
+                        input_dict[k] = self.obs_rms[k].normalize(v)
+                else:
+                    input_dict = obs_dict
                 batch_dict = {
                     'prev_actions': actions,
                     **input_dict,
@@ -304,8 +317,9 @@ class PPO(ActorCriticBase):
         self.set_eval()
         obs_dict = self.env.reset()
         while True:
-            input_dict = {k: self.obs_rms[k](obs_dict[k]) for k in self.obs_rms.keys()}
-            mu = self.model.act(input_dict, sample=False)
+            if self.normalize_input:
+                obs_dict = {k: self.obs_rms[k].normalize(v) for k, v in obs_dict.items()}
+            mu = self.model.act(obs_dict, sample=False)
             mu = torch.clamp(mu, -1.0, 1.0)
             obs_dict, r, done, info = self.env.step(mu)
             info['reward'] = r
@@ -358,12 +372,14 @@ class PPO(ActorCriticBase):
         self.storage.compute_return(last_values, self.gamma, self.tau)
         self.storage.prepare_training()
 
-        returns = self.storage.data_dict['returns']
         values = self.storage.data_dict['values']
+        returns = self.storage.data_dict['returns']
         if self.normalize_value:
             self.value_rms.train()
-            values = self.value_rms(values)
-            returns = self.value_rms(returns)
+            self.value_rms.update(values)
+            values = self.value_rms.normalize(values)
+            self.value_rms.update(returns)
+            returns = self.value_rms.normalize(returns)
             self.value_rms.eval()
         self.storage.data_dict['values'] = values
         self.storage.data_dict['returns'] = returns
