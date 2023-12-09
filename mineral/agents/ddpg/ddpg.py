@@ -10,11 +10,12 @@ import torch.nn.functional as F
 
 from ...buffers import NStepReplay, ReplayBuffer
 from ...common.reward_shaper import RewardShaper
+from ...common.running_mean_std import RunningMeanStd
 from ..actorcritic_base import ActorCriticBase
 from . import models
 from .noise import add_mixed_normal_noise, add_normal_noise
 from .schedule_util import ExponentialSchedule, LinearSchedule
-from .utils import RunningMeanStd, handle_timeout, soft_update
+from .utils import handle_timeout, soft_update
 
 
 class DDPG(ActorCriticBase):
