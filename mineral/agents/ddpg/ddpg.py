@@ -56,7 +56,7 @@ class DDPG(ActorCriticBase):
         if self.normalize_input:
             self.obs_rms = {}
             for k, v in self.obs_space.items():
-                if re.match(self.input_keys_normalize, k):
+                if re.match(self.normalize_keys_rms, k):
                     self.obs_rms[k] = normalizers.RunningMeanStd(v)
                 else:
                     self.obs_rms[k] = normalizers.Identity()
