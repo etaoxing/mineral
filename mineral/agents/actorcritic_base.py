@@ -58,13 +58,16 @@ class ActorCriticBase:
         self.mini_epoch = -1
         self.agent_steps = 0
 
+    def explore_env(self, env, timesteps: int, random: bool = False, sample: bool = True):
+        raise NotImplementedError
+
+    def get_actions(self, obs, sample: bool = True):
+        raise NotImplementedError
+
     def train(self):
         raise NotImplementedError
 
     def eval(self):
-        raise NotImplementedError
-
-    def play_steps(self):
         raise NotImplementedError
 
     def set_train(self):
