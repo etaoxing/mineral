@@ -47,6 +47,9 @@ class ActorCriticBase:
         # ---- Logging ----
         self.metrics_tracker = MetricsTracker(full_cfg, self.output_dir, self.num_actors, self.device)
 
+        self.ckpt_dir = os.path.join(self.output_dir, 'ckpt')
+        os.makedirs(self.ckpt_dir, exist_ok=True)
+
         self.print_every = full_cfg.agent.get('print_every', -1)
         self.ckpt_every = full_cfg.agent.get('ckpt_every', -1)
         self.eval_every = full_cfg.agent.get('eval_every', -1)

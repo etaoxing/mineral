@@ -164,7 +164,7 @@ class PPO(ActorCriticBase):
                 print(info_string)
 
                 metrics = self.summary_stats(total_time, all_sps, train_result)
-                self.write_metrics(self.agent_steps, metrics)
+                self.metrics_tracker.write_metrics(self.agent_steps, metrics)
 
                 mean_rewards = metrics['metrics/episode_rewards']
                 if self.ckpt_every > 0 and (self.epoch % self.ckpt_every == 0):
@@ -292,8 +292,8 @@ class PPO(ActorCriticBase):
             'runtime/sps/env': self.agent_steps / self.data_collect_time,
             'runtime/sps/rl': self.agent_steps / self.rl_train_time,
             'runtime/sps/total': all_sps,
-            'metrics/episode_rewards': self.episode_rewards.mean(),
-            'metrics/episode_lengths': self.episode_lengths.mean(),
+            'metrics/episode_rewards': self.metrics_tracker.episode_rewards.mean(),
+            'metrics/episode_lengths': self.metrics_tracker.episode_lengths.mean(),
         }
         log_dict = {
             'train/loss/total': torch.mean(torch.stack(train_result['loss'])).item(),
@@ -356,14 +356,8 @@ class PPO(ActorCriticBase):
             self.storage.update_data('rewards', n, shaped_rewards)
 
             done_indices = torch.where(self.dones)[0].tolist()
-            save_video = (self.save_video_every > 0) and (self.epoch % self.save_video_every < self.save_video_consecutive)
-            self.update_tracker(rewards.squeeze(-1), done_indices, infos, save_video=save_video)
-
-        if self.save_video_every > 0:
-            # saved video steps depends on horizon_length in play_steps()
-            if (self.epoch % self.save_video_every) == (self.save_video_consecutive - 1):
-                self._info_video = {f'video/{k}': np.concatenate(v, 1) for k, v in self._video_buf.items()}
-                self._video_buf = collections.defaultdict(list)
+            self.metrics_tracker.update_tracker(self.epoch, self.env, self.obs, rewards.squeeze(-1), done_indices, infos)
+        self.metrics_tracker.flush_video_buf(self.epoch)
 
         model_out = self.model_act(obs)
         last_values = model_out['values']

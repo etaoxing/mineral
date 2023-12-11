@@ -12,8 +12,13 @@ from .writer import TensorboardWriter, WandbWriter
 
 
 class MetricsTracker(nn.Module):
-    def __init__(self):
+    def __init__(self, full_cfg, output_dir, num_actors, device):
         super().__init__()
+        self.output_dir = output_dir
+        self.num_actors = num_actors
+        self.device = device
+
+        self.make_writers(full_cfg)
 
     def make_writers(self, full_cfg):
         # ---- Logging ----
@@ -28,11 +33,8 @@ class MetricsTracker(nn.Module):
         self.save_video_every = full_cfg.agent.get('save_video_every', 0)
         self.save_video_consecutive = full_cfg.agent.get('save_video_consecutive', 0)
 
-        # ---- Output Dir ----
-        # allows us to specify a folder where all experiments will reside
-        self.ckpt_dir = os.path.join(self.output_dir, 'ckpt')
+        # ---- Tensorboard Dir ----
         self.tb_dir = os.path.join(self.output_dir, 'tb')
-        os.makedirs(self.ckpt_dir, exist_ok=True)
         os.makedirs(self.tb_dir, exist_ok=True)
 
         # --- Tracking ---
@@ -68,7 +70,7 @@ class MetricsTracker(nn.Module):
             raise RuntimeError(f'Unsupported {k} shape {v.shape}')
         return v
 
-    def update_tracker(self, rewards, done_indices, infos, save_video=False):
+    def update_tracker(self, epoch, env, obs, rewards, done_indices, infos):
         self.current_rewards += rewards
         self.current_lengths += 1
         self.episode_rewards.update(self.current_rewards[done_indices])
@@ -81,15 +83,16 @@ class MetricsTracker(nn.Module):
                 # assert isinstance(v, float) or isinstance(v, int) or (isinstance(v, torch.Tensor) and len(v.shape) == 0)
                 self._info_extra[k] = v.item()
 
+        save_video = (self.save_video_every > 0) and (epoch % self.save_video_every < self.save_video_consecutive)
         if save_video:
             if self.env_render:
-                v = self.env.render(mode='rgb_array')
+                v = env.render(mode='rgb_array')
                 v = self._reshape_env_render('env_render', v)
                 if isinstance(v, torch.Tensor):
                     v = v.cpu().numpy()
                 self._video_buf['env_render'].append(v)
 
-            for k, v in self.obs.items():
+            for k, v in obs.items():
                 if re.match(self.info_keys_video, k):
                     v = self._reshape_env_render(k, v)
                     if isinstance(v, torch.Tensor):
@@ -97,7 +100,7 @@ class MetricsTracker(nn.Module):
                     self._video_buf[k].append(v)
 
         ep = self._episode_info
-        for k, v in self.obs.items():
+        for k, v in obs.items():
             if isinstance(v, np.ndarray):
                 v = torch.from_numpy(v)
 
@@ -133,6 +136,13 @@ class MetricsTracker(nn.Module):
                     ep[k][done_indices] = 0
                 else:
                     ep[k][done_indices] = torch.nan
+
+    def flush_video_buf(self, epoch):
+        if self.save_video_every > 0:
+            # saved video steps depends on horizon_length in play_steps()
+            if (epoch % self.save_video_every) == (self.save_video_consecutive - 1):
+                self._info_video = {f'video/{k}': np.concatenate(v, 1) for k, v in self._video_buf.items()}
+                self._video_buf = collections.defaultdict(list)
 
     def write_metrics(self, step, metrics):
         for k, v in self._info_keys_stats.items():

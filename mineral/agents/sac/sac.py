@@ -159,11 +159,10 @@ class SAC(ActorCriticBase):
             next_obs = self._convert_obs(next_obs)
 
             done_indices = torch.where(dones)[0].tolist()
-            save_video = (self.save_video_every > 0) and (self.epoch % self.save_video_every < self.save_video_consecutive)
-            self.update_tracker(rewards, done_indices, infos, save_video=save_video)
+            self.metrics_tracker.update_tracker(self.epoch, self.env, self.obs, rewards, done_indices, infos)
+
             if self.sac_config.handle_timeout:
                 dones = handle_timeout(dones, infos)
-
             for k, v in obs.items():
                 traj_obs[k][:, i] = v
             traj_actions[:, i] = actions
@@ -174,10 +173,7 @@ class SAC(ActorCriticBase):
             obs = next_obs
         self.obs = obs
 
-        if self.save_video_every > 0:
-            if (self.epoch % self.save_video_every) == (self.save_video_consecutive - 1):
-                self._info_video = {f'video/{k}': np.concatenate(v, 1) for k, v in self._video_buf.items()}
-                self._video_buf = collections.defaultdict(list)
+        self.metrics_tracker.flush_video_buf(self.epoch)
 
         traj_rewards = self.reward_shaper(traj_rewards.reshape(self.num_actors, timesteps, 1))
         traj_dones = traj_dones.reshape(self.num_actors, timesteps, 1)
@@ -207,7 +203,7 @@ class SAC(ActorCriticBase):
 
             self.set_train()
             metrics = self.update_net(self.memory)
-            self.write_metrics(self.agent_steps, metrics)
+            self.metrics_tracker.write_metrics(self.agent_steps, metrics)
 
     def update_net(self, memory):
         train_result = collections.defaultdict(list)
@@ -235,8 +231,8 @@ class SAC(ActorCriticBase):
 
     def summary_stats(self, train_result):
         metrics = {
-            "metrics/episode_rewards": self.episode_rewards.mean(),
-            "metrics/episode_lengths": self.episode_lengths.mean(),
+            "metrics/episode_rewards": self.metrics_tracker.episode_rewards.mean(),
+            "metrics/episode_lengths": self.metrics_tracker.episode_lengths.mean(),
         }
         log_dict = {
             "train/epoch": self.epoch,
