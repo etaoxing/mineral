@@ -58,7 +58,7 @@ class ActorCriticBase:
         self.mini_epoch = -1
         self.agent_steps = 0
 
-    def explore_env(self, env, timesteps: int, random: bool = False, sample: bool = True):
+    def explore_env(self, env, timesteps: int, random: bool = False, sample: bool = False):
         raise NotImplementedError
 
     def get_actions(self, obs, sample: bool = True):

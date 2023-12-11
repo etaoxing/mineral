@@ -129,7 +129,7 @@ class SAC(ActorCriticBase):
             return actions
 
     @torch.no_grad()
-    def explore_env(self, env, timesteps: int, random: bool) -> list:
+    def explore_env(self, env, timesteps: int, random: bool = False, sample: bool = False):
         traj_obs = {
             k: torch.empty((self.num_actors, timesteps) + v, dtype=torch.float32, device=self.device)
             for k, v in self.obs_space.items()
@@ -152,7 +152,7 @@ class SAC(ActorCriticBase):
             if random:
                 actions = torch.rand((self.num_actors, self.action_dim), device=self.device) * 2.0 - 1.0
             else:
-                actions = self.get_actions(obs=self.obs, sample=True)
+                actions = self.get_actions(obs=self.obs, sample=sample)
 
             next_obs, rewards, dones, infos = env.step(actions)
             next_obs = self._convert_obs(next_obs)
@@ -195,7 +195,7 @@ class SAC(ActorCriticBase):
         while self.agent_steps < self.max_agent_steps:
             self.epoch += 1
             self.set_eval()
-            trajectory, steps = self.explore_env(self.env, self.sac_config.horizon_len, random=False)
+            trajectory, steps = self.explore_env(self.env, self.sac_config.horizon_len, sample=True)
             self.agent_steps += steps
             self.memory.add_to_buffer(trajectory)
 
