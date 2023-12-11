@@ -14,7 +14,7 @@ from ...common.reward_shaper import RewardShaper
 from ...common.running_mean_std import RunningMeanStd
 from ..actorcritic_base import ActorCriticBase
 from ..ddpg import models
-from ..ddpg.utils import handle_timeout, soft_update
+from ..ddpg.utils import soft_update
 
 
 class Lambda(nn.Module):
@@ -161,7 +161,7 @@ class SAC(ActorCriticBase):
             self.metrics_tracker.update_tracker(self.epoch, self.env, self.obs, rewards, done_indices, infos)
 
             if self.sac_config.handle_timeout:
-                dones = handle_timeout(dones, infos)
+                dones = self._handle_timeout(dones, infos)
             for k, v in self.obs.items():
                 traj_obs[k][:, i] = v
             traj_actions[:, i] = actions

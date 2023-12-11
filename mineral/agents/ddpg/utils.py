@@ -11,17 +11,6 @@ def soft_update(target_net, current_net, tau: float):
         tar.mul_(1.0 - tau).add_(cur * tau)
 
 
-def handle_timeout(dones, info, timeout_keys=('time_outs', 'TimeLimit.truncated')):
-    timeout_envs = None
-    for timeout_key in timeout_keys:
-        if timeout_key in info:
-            timeout_envs = info[timeout_key]
-            break
-    if timeout_envs is not None:
-        dones = dones * (~timeout_envs)
-    return dones
-
-
 def weight_init_orthogonal_(m):
     if isinstance(m, nn.Linear):
         nn.init.orthogonal_(m.weight.data)

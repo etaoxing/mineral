@@ -15,7 +15,7 @@ from ..actorcritic_base import ActorCriticBase
 from . import models
 from .noise import add_mixed_normal_noise, add_normal_noise
 from .schedule_util import ExponentialSchedule, LinearSchedule
-from .utils import handle_timeout, soft_update
+from .utils import soft_update
 
 
 class DDPG(ActorCriticBase):
@@ -170,7 +170,7 @@ class DDPG(ActorCriticBase):
             self.metrics_tracker.update_tracker(self.epoch, self.env, self.obs, rewards, done_indices, infos)
 
             if self.ddpg_config.handle_timeout:
-                dones = handle_timeout(dones, infos)
+                dones = self._handle_timeout(dones, infos)
             for k, v in self.obs.items():
                 traj_obs[k][:, i] = v
             traj_actions[:, i] = actions
