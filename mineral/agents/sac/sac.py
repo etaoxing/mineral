@@ -296,7 +296,7 @@ class SAC(ActorCriticBase):
         raise NotImplementedError
 
     def set_eval(self):
-        if self.normalize_inputs:
+        if self.normalize_input:
             self.obs_rms.eval()
         self.encoder.eval()
         self.actor.eval()
@@ -306,7 +306,7 @@ class SAC(ActorCriticBase):
         self.critic_target.eval()
 
     def set_train(self):
-        if self.normalize_inputs:
+        if self.normalize_input:
             self.obs_rms.train()
         self.encoder.train()
         self.actor.train()
