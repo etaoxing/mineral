@@ -7,8 +7,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from ...common import normalizers
 from ...common.reward_shaper import RewardShaper
-from ...common.running_mean_std import RunningMeanStd
 from ..actorcritic_base import ActorCriticBase
 from . import models
 from .experience import ExperienceBuffer
@@ -24,13 +24,14 @@ class PPO(ActorCriticBase):
         super().__init__(env, output_dir, full_cfg, **kwargs)
 
         # ---- Normalizer ----
+        rms_config = dict(eps=1e-5, with_clamp=True, initial_count=1, dtype=torch.float64)
         if self.normalize_input:
             self.obs_rms = {}
             for k, v in self.obs_space.items():
                 if re.match(self.input_keys_normalize, k):
-                    self.obs_rms[k] = RunningMeanStd(v, eps=1e-5, with_clamp=True, initial_count=1, dtype=torch.float64)
+                    self.obs_rms[k] = normalizers.RunningMeanStd(v, **rms_config)
                 else:
-                    self.obs_rms[k] = nn.Identity()
+                    self.obs_rms[k] = normalizers.Identity()
             self.obs_rms = nn.ModuleDict(self.obs_rms).to(self.device)
         else:
             self.obs_rms = None
@@ -42,7 +43,7 @@ class PPO(ActorCriticBase):
         self.model = ModelCls(self.obs_space, self.action_dim, encoder=encoder, encoder_kwargs=encoder_kwargs, **model_kwargs)
         self.model.to(self.device)
         print(self.model, '\n')
-        self.value_rms = RunningMeanStd((1,), eps=1e-5, with_clamp=True, initial_count=1, dtype=torch.float64).to(self.device)
+        self.value_rms = normalizers.RunningMeanStd((1,), **rms_config).to(self.device)
         # ---- Optim ----
         optim_kwargs = self.ppo_config.get('optim_kwargs', {})
         learning_rate = optim_kwargs.get('lr', 3e-4)

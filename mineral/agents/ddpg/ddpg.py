@@ -9,8 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ...buffers import NStepReplay, ReplayBuffer
+from ...common import normalizers
 from ...common.reward_shaper import RewardShaper
-from ...common.running_mean_std import RunningMeanStd
 from ..actorcritic_base import ActorCriticBase
 from . import models
 from .noise import add_mixed_normal_noise, add_normal_noise
@@ -54,10 +54,12 @@ class DDPG(ActorCriticBase):
         self.actor_target = deepcopy(self.actor) if not self.ddpg_config.no_tgt_actor else self.actor
 
         if self.normalize_input:
-            self.obs_rms = {
-                k: RunningMeanStd(v) if re.match(self.input_keys_normalize, k) else nn.Identity()
-                for k, v in self.obs_space.items()
-            }
+            self.obs_rms = {}
+            for k, v in self.obs_space.items():
+                if re.match(self.input_keys_normalize, k):
+                    self.obs_rms[k] = normalizers.RunningMeanStd(v)
+                else:
+                    self.obs_rms[k] = normalizers.Identity()
             self.obs_rms = nn.ModuleDict(self.obs_rms).to(self.device)
         else:
             self.obs_rms = None

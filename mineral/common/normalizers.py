@@ -2,6 +2,20 @@ import torch
 import torch.nn as nn
 
 
+class Identity(nn.Module):
+    def __init__(self, shape=None):
+        super().__init__()
+
+    def update(self, x):
+        return
+
+    def normalize(self, x):
+        return x
+
+    def unnormalize(self, x):
+        return x
+
+
 class RunningMeanStd(nn.Module):
     def __init__(self, shape, eps=1e-4, with_clamp=False, clamp_range=(-5.0, 5.0), initial_count='eps', dtype=torch.float32):
         super().__init__()
