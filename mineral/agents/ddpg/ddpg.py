@@ -280,7 +280,7 @@ class DDPG(ActorCriticBase):
                     )
                     for target_Q in target_Qs
                 ]
-                target_Q = torch.min(*target_Qs_projected)
+                target_Q = torch.min(torch.stack(target_Qs_projected), dim=0).values
             else:
                 target_Q = self.critic_target.get_q_min(next_obs, next_actions)
                 target_Q = reward + (1 - done) * (self.ddpg_config.gamma**self.ddpg_config.nstep) * target_Q
