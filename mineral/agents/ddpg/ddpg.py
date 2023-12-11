@@ -15,7 +15,7 @@ from ..actorcritic_base import ActorCriticBase
 from . import models
 from .noise import add_mixed_normal_noise, add_normal_noise
 from .schedule_util import ExponentialSchedule, LinearSchedule
-from .utils import soft_update
+from .utils import distl_projection, soft_update
 
 
 class DDPG(ActorCriticBase):
@@ -257,13 +257,36 @@ class DDPG(ActorCriticBase):
         return {**metrics, **log_dict}
 
     def update_critic(self, obs, action, reward, next_obs, done):
+        distl = getattr(self.critic, "distl", False)
+        if distl:
+            critic_loss_fn = F.binary_cross_entropy
+        else:
+            critic_loss_fn = F.mse_loss
+
         with torch.no_grad():
             next_actions = self.get_tgt_policy_actions(next_obs)
-            target_Q = self.critic_target.get_q_min(next_obs, next_actions)
-            target_Q = reward + (1 - done) * (self.ddpg_config.gamma**self.ddpg_config.nstep) * target_Q
+            if distl:
+                target_Qs = self.critic_target.get_q_values(next_obs, next_actions)
+                target_Qs_projected = [
+                    distl_projection(
+                        next_dist=target_Q,
+                        reward=reward,
+                        done=done,
+                        gamma=self.ddpg_config.gamma**self.ddpg_config.nstep,
+                        v_min=self.critic_target.v_min,
+                        v_max=self.critic_target.v_max,
+                        num_atoms=self.critic_target.num_atoms,
+                        support=self.critic.z_atoms,
+                    )
+                    for target_Q in target_Qs
+                ]
+                target_Q = torch.min(*target_Qs_projected)
+            else:
+                target_Q = self.critic_target.get_q_min(next_obs, next_actions)
+                target_Q = reward + (1 - done) * (self.ddpg_config.gamma**self.ddpg_config.nstep) * target_Q
 
         current_Qs = self.critic.get_q_values(obs, action)
-        critic_loss = torch.sum(torch.stack([F.mse_loss(current_Q, target_Q) for current_Q in current_Qs]))
+        critic_loss = torch.sum(torch.stack([critic_loss_fn(current_Q, target_Q) for current_Q in current_Qs]))
         grad_norm = self.optimizer_update(self.critic_optim, critic_loss)
         return critic_loss, grad_norm
 

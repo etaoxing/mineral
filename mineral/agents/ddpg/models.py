@@ -144,3 +144,54 @@ class EnsembleQ(nn.Module):
     def get_q_values(self, state, action):
         return self.forward(state, action)
 
+
+class DistributionalEnsembleQ(nn.Module):
+    def __init__(
+        self,
+        state_dim,
+        action_dim,
+        v_min=-10,
+        v_max=10,
+        num_atoms=51,
+        n_critics=2,
+        mlp_kwargs={},
+        weight_init=None,
+    ):
+        super().__init__()
+        self.v_min = v_min
+        self.v_max = v_max
+        self.num_atoms = num_atoms
+        self.z_atoms = torch.linspace(v_min, v_max, num_atoms)
+
+        self.n_critics = n_critics
+        critics = []
+        for _ in range(n_critics):
+            q = MLP(state_dim + action_dim, out_dim=num_atoms, **mlp_kwargs)
+            critics.append(q)
+        self.critics = nn.ModuleList(critics)
+
+        self.weight_init = weight_init
+        self.reset_parameters()
+
+    @property
+    def distl(self):
+        return True
+
+    def reset_parameters(self):
+        if self.weight_init != None:
+            raise NotImplementedError(self.weight_init)
+
+    def forward(self, state, action):
+        input_x = torch.cat((state, action), dim=1)
+        Qs = [critic(input_x) for critic in self.critics]
+        return Qs
+
+    def get_q_min(self, state, action):
+        Qs = self.forward(state, action)
+        Qs = [torch.sum(Q * self.z_atoms.to(Q.device), dim=1) for Q in Qs]
+        return torch.min(*Qs)
+
+    def get_q_values(self, state, action):
+        Qs = self.forward(state, action)
+        Qs = [torch.softmax(Q, dim=1) for Q in Qs]
+        return Qs
