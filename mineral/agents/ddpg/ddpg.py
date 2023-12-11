@@ -151,18 +151,17 @@ class DDPG(ActorCriticBase):
         }
         traj_dones = torch.empty((self.num_actors, timesteps), device=self.device)
 
-        obs = self.obs
         for i in range(timesteps):
             if not self.env_autoresets:
                 raise NotImplementedError
 
             if self.normalize_input:
-                for k, v in obs.items():
+                for k, v in self.obs.items():
                     self.obs_rms[k].update(v)
             if random:
                 actions = torch.rand((self.num_actors, self.action_dim), device=self.device) * 2.0 - 1.0
             else:
-                actions = self.get_actions(obs, sample=True)
+                actions = self.get_actions(self.obs, sample=True)
 
             next_obs, rewards, dones, infos = env.step(actions)
             next_obs = self._convert_obs(next_obs)
@@ -172,15 +171,14 @@ class DDPG(ActorCriticBase):
 
             if self.ddpg_config.handle_timeout:
                 dones = handle_timeout(dones, infos)
-            for k, v in obs.items():
+            for k, v in self.obs.items():
                 traj_obs[k][:, i] = v
             traj_actions[:, i] = actions
             traj_dones[:, i] = dones
             traj_rewards[:, i] = rewards
             for k, v in next_obs.items():
                 traj_next_obs[k][:, i] = v
-            obs = next_obs
-        self.obs = obs
+            self.obs = next_obs
 
         self.metrics_tracker.flush_video_buf(self.epoch)
 
