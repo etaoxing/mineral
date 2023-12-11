@@ -29,3 +29,6 @@ class Tracker:
 
     def max(self):
         return np.max(self.window)
+
+    def min(self):
+        return np.min(self.window)
