@@ -188,7 +188,7 @@ class DistributionalEnsembleQ(nn.Module):
         return Qs
 
     def get_q_min(self, state, action):
-        Qs = self.forward(state, action)
+        Qs = self.get_q_values(state, action)
         Qs = [torch.sum(Q * self.z_atoms.to(Q.device), dim=1) for Q in Qs]
         return torch.min(torch.stack(Qs), dim=0).values
 
