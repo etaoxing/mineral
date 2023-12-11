@@ -148,6 +148,7 @@ class MetricsTracker(nn.Module):
         for k, v in self._info_keys_stats.items():
             v = np.concatenate(v, 0)
             metrics[f'episode/{k}'] = np.nanmean(v).item()
+            metrics[f'episode_stds/{k}'] = np.nanstd(v).item()
         self._info_keys_stats.clear()
 
         for k, v in self._info_extra.items():
