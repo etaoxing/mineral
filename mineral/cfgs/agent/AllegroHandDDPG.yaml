@@ -21,11 +21,16 @@ network:
 
   critic: EnsembleQ
   critic_kwargs:
+    # n_critics: 3
     n_critics: 2
     # mlp_kwargs:
     #   norm_type: LayerNorm
     #   act_type: SiLU
     # weight_init: orthogonal
+
+  # critic: DistributionalEnsembleQ
+  # critic_kwargs:
+  #   n_critics: 2
 
 ddpg:
   multi_gpu: ${...multi_gpu}
