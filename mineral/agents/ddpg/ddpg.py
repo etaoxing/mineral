@@ -55,7 +55,7 @@ class DDPG(ActorCriticBase):
 
         if self.normalize_input:
             self.obs_rms = {
-                k: RunningMeanStd(v, device=self.device) if re.match(self.input_keys_normalize, k) else nn.Identity()
+                k: RunningMeanStd(v) if re.match(self.input_keys_normalize, k) else nn.Identity()
                 for k, v in self.obs_space.items()
             }
             self.obs_rms = nn.ModuleDict(self.obs_rms).to(self.device)
