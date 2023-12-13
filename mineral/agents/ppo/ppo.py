@@ -357,7 +357,7 @@ class PPO(ActorCriticBase):
             self.storage.update_data('rewards', n, shaped_rewards)
 
             done_indices = torch.where(self.dones)[0].tolist()
-            self.metrics.update_tracker(self.epoch, self.env, self.obs, rewards.squeeze(-1), done_indices, infos)
+            self.metrics.update(self.epoch, self.env, self.obs, rewards.squeeze(-1), done_indices, infos)
         self.metrics.flush_video_buf(self.epoch)
 
         model_out = self.model_act(obs)

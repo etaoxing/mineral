@@ -67,7 +67,7 @@ class Metrics(nn.Module):
             raise RuntimeError(f'Unsupported {k} shape {v.shape}')
         return v
 
-    def update_tracker(self, epoch, env, obs, rewards, done_indices, infos):
+    def update(self, epoch, env, obs, rewards, done_indices, infos):
         self.current_rewards += rewards
         self.current_lengths += 1
         self.episode_rewards.update(self.current_rewards[done_indices])

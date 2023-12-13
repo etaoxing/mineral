@@ -170,7 +170,7 @@ class DDPG(ActorCriticBase):
             next_obs = self._convert_obs(next_obs)
 
             done_indices = torch.where(dones)[0].tolist()
-            self.metrics.update_tracker(self.epoch, self.env, self.obs, rewards, done_indices, infos)
+            self.metrics.update(self.epoch, self.env, self.obs, rewards, done_indices, infos)
 
             if self.ddpg_config.handle_timeout:
                 dones = self._handle_timeout(dones, infos)
