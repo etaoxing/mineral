@@ -18,9 +18,6 @@ class Metrics(nn.Module):
         self.num_actors = num_actors
         self.device = device
 
-        self.make_writers(full_cfg)
-
-    def make_writers(self, full_cfg):
         # ---- Logging ----
         self.env_render = full_cfg.env_render
         info_keys_cfg = full_cfg.agent.get('info_keys', {})
