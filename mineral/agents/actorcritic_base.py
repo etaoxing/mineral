@@ -4,8 +4,10 @@ import re
 
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 
 from ..common.metrics import Metrics
+from ..common.writer import TensorboardWriter, WandbWriter, Writer
 
 
 class ActorCriticBase:
@@ -45,10 +47,20 @@ class ActorCriticBase:
         self.obs_space = obs_space
 
         # ---- Logging ----
-        self.metrics = Metrics(full_cfg, self.output_dir, self.num_actors, self.device)
-
         self.ckpt_dir = os.path.join(self.output_dir, 'ckpt')
         os.makedirs(self.ckpt_dir, exist_ok=True)
+        self.tb_dir = os.path.join(self.output_dir, 'tb')
+        os.makedirs(self.tb_dir, exist_ok=True)
+
+        self.metrics = Metrics(full_cfg, self.output_dir, self.num_actors, self.device)
+
+        resolved_config = OmegaConf.to_container(full_cfg, resolve=True)
+        self._writers = Writer(
+            [
+                WandbWriter(),
+                TensorboardWriter(self.tb_dir, resolved_config),
+            ]
+        )
 
         self.print_every = full_cfg.agent.get('print_every', -1)
         self.ckpt_every = full_cfg.agent.get('ckpt_every', -1)

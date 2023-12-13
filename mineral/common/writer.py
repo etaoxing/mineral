@@ -3,6 +3,24 @@ import collections
 import numpy as np
 
 
+class Writer:
+    def __init__(self, outputs):
+        self.outputs = outputs
+        self._metrics = []
+
+    def add(self, step, metrics, prefix=None):
+        for k, v in metrics.items():
+            name = f'{prefix}_{k}' if prefix else k
+            self._metrics.append((step, name, v))
+
+    def write(self):
+        if not self._metrics:
+            return
+        for output in self.outputs:
+            output(tuple(self._metrics))
+        self._metrics.clear()
+
+
 class AsyncOutput:
     def __init__(self, callback, parallel=True):
         self._callback = callback

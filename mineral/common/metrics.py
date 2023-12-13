@@ -5,10 +5,8 @@ import re
 import numpy as np
 import torch
 import torch.nn as nn
-from omegaconf import OmegaConf
 
 from .tracker import Tracker
-from .writer import TensorboardWriter, WandbWriter
 
 
 class Metrics(nn.Module):
@@ -21,18 +19,14 @@ class Metrics(nn.Module):
         # ---- Logging ----
         self.env_render = full_cfg.env_render
         info_keys_cfg = full_cfg.agent.get('info_keys', {})
-        self.info_keys_video = re.compile(info_keys_cfg.get('video', '$^'))
         self.info_keys_sum = re.compile(info_keys_cfg.get('sum', '$^'))
         self.info_keys_min = re.compile(info_keys_cfg.get('min', '$^'))
         self.info_keys_max = re.compile(info_keys_cfg.get('max', '$^'))
         self.info_keys_final = re.compile(info_keys_cfg.get('final', '$^'))
         self.info_keys_scalar = re.compile(info_keys_cfg.get('scalar', '$^'))
+        self.info_keys_video = re.compile(info_keys_cfg.get('video', '$^'))
         self.save_video_every = full_cfg.agent.get('save_video_every', 0)
         self.save_video_consecutive = full_cfg.agent.get('save_video_consecutive', 0)
-
-        # ---- Tensorboard Dir ----
-        self.tb_dir = os.path.join(self.output_dir, 'tb')
-        os.makedirs(self.tb_dir, exist_ok=True)
 
         # --- Tracking ---
         self._episode_info = {}
@@ -45,15 +39,9 @@ class Metrics(nn.Module):
         self.episode_rewards = Tracker(tracker_len)
         self.episode_lengths = Tracker(tracker_len)
 
-        # ---- Wandb / Tensorboard Logger ----
         self._info_extra = {}
         self._info_video = None
         self._info_keys_stats = collections.defaultdict(list)
-        resolved_config = OmegaConf.to_container(full_cfg, resolve=True)
-        self._writers = [
-            WandbWriter(),
-            TensorboardWriter(self.tb_dir, resolved_config),
-        ]
 
     @staticmethod
     def _reshape_env_render(k, v):
@@ -141,7 +129,7 @@ class Metrics(nn.Module):
                 self._info_video = {f'video/{k}': np.concatenate(v, 1) for k, v in self._video_buf.items()}
                 self._video_buf = collections.defaultdict(list)
 
-    def write_metrics(self, step, metrics):
+    def result(self, metrics):
         for k, v in self._info_keys_stats.items():
             v = np.concatenate(v, 0)
             metrics[f'episode/{k}'] = np.nanmean(v).item()
@@ -150,10 +138,10 @@ class Metrics(nn.Module):
 
         for k, v in self._info_extra.items():
             metrics[f'extras/{k}'] = v
+        self._info_extra.clear()
 
         if self._info_video is not None:
             metrics.update(self._info_video)
             self._info_video = None
 
-        summary = tuple([(step, k, v) for k, v in metrics.items()])
-        [w(summary) for w in self._writers]
+        return metrics
