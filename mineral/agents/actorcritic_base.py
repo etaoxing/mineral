@@ -5,7 +5,7 @@ import re
 import numpy as np
 import torch
 
-from ..common.metrics_tracker import MetricsTracker
+from ..common.metrics import Metrics
 
 
 class ActorCriticBase:
@@ -45,7 +45,7 @@ class ActorCriticBase:
         self.obs_space = obs_space
 
         # ---- Logging ----
-        self.metrics_tracker = MetricsTracker(full_cfg, self.output_dir, self.num_actors, self.device)
+        self.metrics = Metrics(full_cfg, self.output_dir, self.num_actors, self.device)
 
         self.ckpt_dir = os.path.join(self.output_dir, 'ckpt')
         os.makedirs(self.ckpt_dir, exist_ok=True)

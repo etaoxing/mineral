@@ -165,7 +165,7 @@ class PPO(ActorCriticBase):
                 print(info_string)
 
                 metrics = self.summary_stats(total_time, all_sps, train_result)
-                self.metrics_tracker.write_metrics(self.agent_steps, metrics)
+                self.metrics.write_metrics(self.agent_steps, metrics)
 
                 mean_rewards = metrics['metrics/episode_rewards']
                 if self.ckpt_every > 0 and (self.epoch % self.ckpt_every == 0):
@@ -293,8 +293,8 @@ class PPO(ActorCriticBase):
             'runtime/sps/env': self.agent_steps / self.data_collect_time,
             'runtime/sps/rl': self.agent_steps / self.rl_train_time,
             'runtime/sps/total': all_sps,
-            'metrics/episode_rewards': self.metrics_tracker.episode_rewards.mean(),
-            'metrics/episode_lengths': self.metrics_tracker.episode_lengths.mean(),
+            'metrics/episode_rewards': self.metrics.episode_rewards.mean(),
+            'metrics/episode_lengths': self.metrics.episode_lengths.mean(),
         }
         log_dict = {
             'train/loss/total': torch.mean(torch.stack(train_result['loss'])).item(),
@@ -357,8 +357,8 @@ class PPO(ActorCriticBase):
             self.storage.update_data('rewards', n, shaped_rewards)
 
             done_indices = torch.where(self.dones)[0].tolist()
-            self.metrics_tracker.update_tracker(self.epoch, self.env, self.obs, rewards.squeeze(-1), done_indices, infos)
-        self.metrics_tracker.flush_video_buf(self.epoch)
+            self.metrics.update_tracker(self.epoch, self.env, self.obs, rewards.squeeze(-1), done_indices, infos)
+        self.metrics.flush_video_buf(self.epoch)
 
         model_out = self.model_act(obs)
         last_values = model_out['values']

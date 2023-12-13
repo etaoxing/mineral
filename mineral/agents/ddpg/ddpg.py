@@ -170,7 +170,7 @@ class DDPG(ActorCriticBase):
             next_obs = self._convert_obs(next_obs)
 
             done_indices = torch.where(dones)[0].tolist()
-            self.metrics_tracker.update_tracker(self.epoch, self.env, self.obs, rewards, done_indices, infos)
+            self.metrics.update_tracker(self.epoch, self.env, self.obs, rewards, done_indices, infos)
 
             if self.ddpg_config.handle_timeout:
                 dones = self._handle_timeout(dones, infos)
@@ -183,7 +183,7 @@ class DDPG(ActorCriticBase):
                 traj_next_obs[k][:, i] = v
             self.obs = next_obs
 
-        self.metrics_tracker.flush_video_buf(self.epoch)
+        self.metrics.flush_video_buf(self.epoch)
 
         traj_rewards = self.reward_shaper(traj_rewards.reshape(self.num_actors, timesteps, 1))
         traj_dones = traj_dones.reshape(self.num_actors, timesteps, 1)
@@ -213,7 +213,7 @@ class DDPG(ActorCriticBase):
 
             self.set_train()
             metrics = self.update_net(self.memory)
-            self.metrics_tracker.write_metrics(self.agent_steps, metrics)
+            self.metrics.write_metrics(self.agent_steps, metrics)
 
         self.save(os.path.join(self.ckpt_dir, 'final.pth'))
 
@@ -247,8 +247,8 @@ class DDPG(ActorCriticBase):
 
     def summary_stats(self, train_result):
         metrics = {
-            "metrics/episode_rewards": self.metrics_tracker.episode_rewards.mean(),
-            "metrics/episode_lengths": self.metrics_tracker.episode_lengths.mean(),
+            "metrics/episode_rewards": self.metrics.episode_rewards.mean(),
+            "metrics/episode_lengths": self.metrics.episode_lengths.mean(),
         }
         log_dict = {
             "train/epoch": self.epoch,

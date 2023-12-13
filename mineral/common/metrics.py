@@ -11,7 +11,7 @@ from .tracker import Tracker
 from .writer import TensorboardWriter, WandbWriter
 
 
-class MetricsTracker(nn.Module):
+class Metrics(nn.Module):
     def __init__(self, full_cfg, output_dir, num_actors, device):
         super().__init__()
         self.output_dir = output_dir
