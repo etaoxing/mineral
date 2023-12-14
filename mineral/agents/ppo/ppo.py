@@ -167,6 +167,7 @@ class PPO(ActorCriticBase):
                 metrics = self.summary_stats(timings, train_result)
                 metrics = self.metrics.result(metrics)
                 self.writer.add(self.agent_steps, metrics)
+                self.writer.write()
 
                 mean_rewards = metrics['metrics/episode_rewards']
                 if self.ckpt_every > 0 and (self.epoch % self.ckpt_every == 0):
