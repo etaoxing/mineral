@@ -161,7 +161,7 @@ class BC(ActorCriticBase):
         eval_episodes = 0
         while eval_episodes < self.metrics.tracker_len:
             # TODO: assumes envs do not terminate early
-            trajectory, steps = self.explore_env(self.env, max_steps, random=False, sample=True)
+            trajectory, steps = self.explore_env(self.env, max_steps, random=False, sample=False)
             eval_episodes += self.num_actors
 
         eval_metrics = {
