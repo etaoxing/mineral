@@ -53,14 +53,12 @@ class ActorCriticBase:
         os.makedirs(self.tb_dir, exist_ok=True)
 
         self.metrics = Metrics(full_cfg, self.output_dir, self.num_actors, self.device)
-
         resolved_config = OmegaConf.to_container(full_cfg, resolve=True)
-        self.writer = Writer(
-            [
-                WandbWriter(),
-                TensorboardWriter(self.tb_dir, resolved_config),
-            ]
-        )
+        writers = [
+            WandbWriter(),
+            TensorboardWriter(self.tb_dir, resolved_config),
+        ]
+        self.writer = Writer(writers)
 
         self.print_every = full_cfg.agent.get('print_every', -1)
         self.ckpt_every = full_cfg.agent.get('ckpt_every', -1)
