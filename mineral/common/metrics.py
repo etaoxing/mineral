@@ -36,6 +36,7 @@ class Metrics(nn.Module):
         self.current_lengths = torch.zeros(self.num_actors, dtype=torch.float32, device=self.device)
 
         tracker_len = full_cfg.agent.get('tracker_len', 100)
+        self.tracker_len = tracker_len
         self.episode_rewards = Tracker(tracker_len)
         self.episode_lengths = Tracker(tracker_len)
 
