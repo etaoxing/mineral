@@ -136,13 +136,14 @@ class PPO(ActorCriticBase):
         obs = self.env.reset()
         self.obs = self._convert_obs(obs)
         self.dones = torch.zeros((self.num_actors,), dtype=torch.bool, device=self.device)
-        self.agent_steps = self.batch_size if not self.multi_gpu else self.batch_size * self.rank_size
 
         while self.agent_steps < self.max_agent_steps:
             self.epoch += 1
 
             self.set_eval()
             self.play_steps()
+            self.agent_steps += self.batch_size if not self.multi_gpu else self.batch_size * self.rank_size
+
             self.set_train()
             train_result = self.train_epoch()
             self.storage.data_dict = None
@@ -349,7 +350,6 @@ class PPO(ActorCriticBase):
         model_out = self.model_act(obs)
         last_values = model_out['values']
 
-        self.agent_steps += self.batch_size if not self.multi_gpu else self.batch_size * self.rank_size
         self.storage.compute_return(last_values, self.gamma, self.tau)
         self.storage.prepare_training()
 
