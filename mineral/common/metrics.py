@@ -40,9 +40,9 @@ class Metrics(nn.Module):
         self.episode_rewards = Tracker(tracker_len)
         self.episode_lengths = Tracker(tracker_len)
 
+        self.episode_stats = collections.defaultdict(list)  # TODO: use tracker_len?
         self._info_extra = {}
         self._info_video = None
-        self._info_keys_stats = collections.defaultdict(list)
 
     @staticmethod
     def _reshape_env_render(k, v):
@@ -117,7 +117,7 @@ class Metrics(nn.Module):
         if len(done_indices) > 0:
             for k in ep.keys():
                 v = ep[k][done_indices].cpu().numpy()
-                self._info_keys_stats[k].append(v)
+                self.episode_stats[k].append(v)
                 if 'sum' in k or 'final' in k:
                     ep[k][done_indices] = 0
                 else:
@@ -131,11 +131,11 @@ class Metrics(nn.Module):
                 self._video_buf = collections.defaultdict(list)
 
     def result(self, metrics):
-        for k, v in self._info_keys_stats.items():
+        for k, v in self.episode_stats.items():
             v = np.concatenate(v, 0)
             metrics[f'episode/{k}'] = np.nanmean(v).item()
             metrics[f'episode_stds/{k}'] = np.nanstd(v).item()
-        self._info_keys_stats.clear()
+        self.episode_stats.clear()
 
         for k, v in self._info_extra.items():
             metrics[f'extras/{k}'] = v
