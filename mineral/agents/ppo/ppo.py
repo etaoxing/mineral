@@ -9,6 +9,7 @@ import torch.nn as nn
 
 from ...common import normalizers
 from ...common.reward_shaper import RewardShaper
+from ...common.timer import Timer
 from ..actorcritic_base import ActorCriticBase
 from . import models
 from .experience import ExperienceBuffer
@@ -99,6 +100,10 @@ class PPO(ActorCriticBase):
         self.rl_train_time = 0
         self.all_time = 0
 
+        self.timer = Timer()
+        self.timer.wrap('agent', self, ['train_epoch', 'play_steps'])
+        self.timer.wrap('env', self.env, ['step'])
+
         if self.multi_gpu:
             self.model = self.accelerator.prepare(self.model)
             self.optimizer = self.accelerator.prepare(self.optimizer)
@@ -132,8 +137,6 @@ class PPO(ActorCriticBase):
         return model_out
 
     def train(self):
-        _t = time.time()
-        _last_t = time.time()
         obs = self.env.reset()
         self.obs = self._convert_obs(obs)
         self.dones = torch.zeros((self.num_actors,), dtype=torch.bool, device=self.device)
@@ -141,6 +144,10 @@ class PPO(ActorCriticBase):
 
         while self.agent_steps < self.max_agent_steps:
             self.epoch += 1
+
+            self.set_eval()
+            self.play_steps()
+            self.set_train()
             train_result = self.train_epoch()
             self.storage.data_dict = None
 
@@ -148,23 +155,19 @@ class PPO(ActorCriticBase):
                 self.last_lr = self.scheduler.update(self.agent_steps)
 
             if not self.multi_gpu or (self.multi_gpu and self.rank == 0):
-                total_time = time.time() - _t
-                all_sps = self.agent_steps / total_time
-                last_sps = (self.batch_size if not self.multi_gpu else self.batch_size * self.rank_size) / (
-                    time.time() - _last_t
-                )
-                _last_t = time.time()
+                timings = self.timer.stats(step=self.agent_steps, total_names=('agent.play_steps', 'agent.train_epoch'))
                 info_string = (
                     f'Epoch: {self.epoch} | '
-                    f'Agent Steps: {int(self.agent_steps):,} | SPS: {all_sps:.1f} | '
-                    f'Last SPS: {last_sps:.1f} | '
-                    f'Collect Time: {self.data_collect_time / 60:.1f} min | '
-                    f'Train RL Time: {self.rl_train_time / 60:.1f} min | '
+                    f'Agent Steps: {int(self.agent_steps):,} | '
+                    f'SPS: {timings["totalrate"]:.1f} | '
+                    f'Last SPS: {timings["lastrate"]:.1f} | '
+                    f'Collect Time: {timings["agent.play_steps/total"] / 60:.1f} min | '
+                    f'Train RL Time: {timings["agent.train_epoch/total"] / 60:.1f} min | '
                     f'Current Best: {self.best_rewards:.2f}'
                 )
                 print(info_string)
 
-                metrics = self.summary_stats(total_time, all_sps, train_result)
+                metrics = self.summary_stats(timings, train_result)
                 metrics = self.metrics.result(metrics)
                 self.writer.add(self.agent_steps, metrics)
 
@@ -190,15 +193,6 @@ class PPO(ActorCriticBase):
         self.save(os.path.join(self.ckpt_dir, 'final.pth'))
 
     def train_epoch(self):
-        # collect minibatch data
-        _t = time.time()
-        self.set_eval()
-        self.play_steps()
-        self.data_collect_time += time.time() - _t
-        # update network
-        _t = time.time()
-        self.set_train()
-
         train_result = collections.defaultdict(list)
         for mini_ep in range(0, self.mini_epochs):
             self.mini_epoch += 1
@@ -283,20 +277,15 @@ class PPO(ActorCriticBase):
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = self.last_lr
 
-        self.rl_train_time += time.time() - _t
         return train_result
 
-    def summary_stats(self, total_time, all_sps, train_result):
+    def summary_stats(self, timings, train_result):
         metrics = {
-            'runtime/time/env': self.data_collect_time,
-            'runtime/time/rl': self.rl_train_time,
-            'runtime/time/total': total_time,
-            'runtime/sps/env': self.agent_steps / self.data_collect_time,
-            'runtime/sps/rl': self.agent_steps / self.rl_train_time,
-            'runtime/sps/total': all_sps,
             'metrics/episode_rewards': self.metrics.episode_rewards.mean(),
             'metrics/episode_lengths': self.metrics.episode_lengths.mean(),
         }
+        for k, v in timings.items():
+            metrics[f'timings/{k}'] = v
         log_dict = {
             'train/loss/total': torch.mean(torch.stack(train_result['loss'])).item(),
             'train/loss/actor': torch.mean(torch.stack(train_result['a_loss'])).item(),
