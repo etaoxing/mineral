@@ -55,7 +55,7 @@ class ActorCriticBase:
         self.metrics = Metrics(full_cfg, self.output_dir, self.num_actors, self.device)
 
         resolved_config = OmegaConf.to_container(full_cfg, resolve=True)
-        self._writers = Writer(
+        self.writer = Writer(
             [
                 WandbWriter(),
                 TensorboardWriter(self.tb_dir, resolved_config),
