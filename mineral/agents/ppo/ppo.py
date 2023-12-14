@@ -96,10 +96,6 @@ class PPO(ActorCriticBase):
         self.reward_shaper = RewardShaper(**self.ppo_config['reward_shaper'])
         self.best_rewards = -float('inf')
         # ---- Timing
-        self.data_collect_time = 0
-        self.rl_train_time = 0
-        self.all_time = 0
-
         self.timer = Timer()
         self.timer.wrap('agent', self, ['train_epoch', 'play_steps'])
         self.timer.wrap('env', self.env, ['step'])
