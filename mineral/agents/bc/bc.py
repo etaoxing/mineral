@@ -85,10 +85,11 @@ class BC(ActorCriticBase):
                 self.mini_epoch += 1
                 train_result = self.update_model(batch)
                 metrics = {
-                    "train/epoch": self.epoch,
-                    "train/mini_epoch": self.mini_epoch,
+                    "epoch": self.epoch,
+                    "mini_epoch": self.mini_epoch,
                     **train_result,
                 }
+                metrics = {f"train/{k}": v for k, v in metrics.items() if v is not None}
                 self.writer.add(self.mini_epoch, metrics)
                 self.writer.write()
 
@@ -159,6 +160,7 @@ class BC(ActorCriticBase):
         max_steps = self.env.max_episode_length
         eval_episodes = 0
         while eval_episodes < self.metrics.tracker_len:
+            # TODO: assumes envs do not terminate early
             trajectory, steps = self.explore_env(self.env, max_steps, random=False, sample=True)
             eval_episodes += self.num_actors
 
@@ -196,14 +198,14 @@ class BC(ActorCriticBase):
             if random:
                 actions = torch.rand((self.num_actors, self.action_dim), device=self.device) * 2.0 - 1.0
             else:
-                actions = self.get_actions(self, self.obs, sample=sample)
+                actions = self.get_actions(self.obs, sample=sample)
 
             next_obs, rewards, dones, infos = env.step(actions)
             next_obs = self._convert_obs(next_obs)
             rewards, self.dones = torch.as_tensor(rewards, device=self.device), torch.as_tensor(dones, device=self.device)
 
             done_indices = torch.where(self.dones)[0].tolist()
-            self.metrics.update_tracker(self.epoch, self.env, self.obs, rewards, done_indices, infos)
+            self.metrics.update(self.epoch, self.env, self.obs, rewards, done_indices, infos)
 
             # if self.bc_config.handle_timeout:
             #     dones = handle_timeout(dones, infos)
