@@ -63,6 +63,7 @@ class ActorCriticBase:
         self.print_every = full_cfg.agent.get('print_every', -1)
         self.ckpt_every = full_cfg.agent.get('ckpt_every', -1)
         self.eval_every = full_cfg.agent.get('eval_every', -1)
+        self.best_stat = None
 
         self.epoch = -1
         self.mini_epoch = -1
@@ -85,6 +86,26 @@ class ActorCriticBase:
 
     def set_eval(self):
         raise NotImplementedError
+
+    def checkpoint_save(self, stat, stat_name='rewards', higher_better=True):
+        if self.ckpt_every > 0 and (self.epoch % self.ckpt_every == 0):
+            ckpt_name = f'epoch={self.epoch}_steps={self.agent_steps}_{stat_name}={stat:.2f}'
+            self.save(os.path.join(self.ckpt_dir, ckpt_name + '.pth'))
+            latest_ckpt_path = os.path.join(self.ckpt_dir, 'latest.pth')
+            if os.path.exists(latest_ckpt_path):
+                os.unlink(latest_ckpt_path)
+            os.symlink(ckpt_name + '.pth', latest_ckpt_path)
+
+        better = (stat > self.best_stat if higher_better else stat < self.best_stat) if self.best_stat is not None else True
+        if better:
+            print(f'saving current best_{stat_name}={stat:.2f}')
+            if self.best_stat is not None:
+                # remove previous best file
+                prev_best_ckpt = os.path.join(self.ckpt_dir, f'best_{stat_name}={self.best_stat:.2f}.pth')
+                if os.path.exists(prev_best_ckpt):
+                    os.remove(prev_best_ckpt)
+            self.best_stat = stat
+            self.save(os.path.join(self.ckpt_dir, f'best_{stat_name}={self.best_stat:.2f}.pth'))
 
     def save(self, f):
         raise NotImplementedError

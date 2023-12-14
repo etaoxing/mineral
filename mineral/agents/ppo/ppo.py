@@ -94,7 +94,6 @@ class PPO(ActorCriticBase):
             self.obs_keys_cpu,
         )
         self.reward_shaper = RewardShaper(**self.ppo_config['reward_shaper'])
-        self.best_rewards = -float('inf')
         # ---- Timing
         self.timer = Timer()
         self.timer.wrap('agent', self, ['train_epoch', 'play_steps'])
@@ -160,7 +159,7 @@ class PPO(ActorCriticBase):
                     f'Last SPS: {timings["lastrate"]:.1f} | '
                     f'Collect Time: {timings["agent.play_steps/total"] / 60:.1f} min | '
                     f'Train RL Time: {timings["agent.train_epoch/total"] / 60:.1f} min | '
-                    f'Current Best: {self.best_rewards:.2f}'
+                    f'Current Best: {self.best_stat if self.best_stat is not None else -float("inf"):.2f}'
                 )
                 print(info_string)
 
@@ -169,25 +168,7 @@ class PPO(ActorCriticBase):
                 self.writer.add(self.agent_steps, metrics)
                 self.writer.write()
 
-                mean_rewards = metrics['metrics/episode_rewards']
-                if self.ckpt_every > 0 and (self.epoch % self.ckpt_every == 0):
-                    ckpt_name = f'epoch={self.epoch}_steps={self.agent_steps}_reward={mean_rewards:.2f}'
-                    self.save(os.path.join(self.ckpt_dir, ckpt_name + '.pth'))
-                    latest_ckpt_path = os.path.join(self.ckpt_dir, 'latest.pth')
-                    if os.path.exists(latest_ckpt_path):
-                        os.unlink(latest_ckpt_path)
-                    os.symlink(ckpt_name + '.pth', latest_ckpt_path)
-
-                if mean_rewards > self.best_rewards:
-                    print(f'saving current best_rewards={mean_rewards:.2f}')
-
-                    # remove previous best file
-                    prev_best_ckpt = os.path.join(self.ckpt_dir, f'best_reward={self.best_rewards:.2f}.pth')
-                    if os.path.exists(prev_best_ckpt):
-                        os.remove(prev_best_ckpt)
-
-                    self.best_rewards = mean_rewards
-                    self.save(os.path.join(self.ckpt_dir, f'best_reward={self.best_rewards:.2f}.pth'))
+                self.checkpoint_save(metrics['metrics/episode_rewards'])
         self.save(os.path.join(self.ckpt_dir, 'final.pth'))
 
     def train_epoch(self):
