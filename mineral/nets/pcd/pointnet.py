@@ -109,20 +109,21 @@ class PointNet(nn.Module):
         else:
             x = pos
 
-        x = torch.bmm(x, self.stn(x))
-
+        trans = self.stn(x)
+        x = torch.bmm(x, trans)
         x = x.view(B * N, -1)
         x = self.feature_l0(x)
         if self.feature_transform:
             x = x.view(B, N, -1)
-            local_x = self.fstn(x)
-            x = torch.bmm(x, local_x)
+            feature_trans = self.fstn(x)
+            x = torch.bmm(x, feature_trans)
+            local_x = x  # (B, N, D)
             x = x.view(B * N, -1)
         else:
-            local_x = None
+            local_x = x
         x = self.feature_l1(x)
         x = x.view(B, N, -1)
 
         global_x, _ = torch.max(x, 1)
-
+        # local_x = torch.cat([global_x.unsqueeze(1).repeat(1, local_x.shape[1], 1), local_x], dim=-1)
         return global_x, local_x
