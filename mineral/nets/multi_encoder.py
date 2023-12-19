@@ -40,6 +40,9 @@ class MultiEncoder(nn.Module):
             self.out_dim += self._cnn.out_dim
 
         if self.pcd_shapes:
+            pcd_inputs_kwargs = cfg.get('pcd_inputs_kwargs', {})
+            self._pcd_inputs = PCD.PCDInputs(self.pcd_shapes, **pcd_inputs_kwargs)
+
             pcd, pcd_kwargs = cfg.pcd, cfg.pcd_kwargs
             Cls = getattr(PCD, pcd)
             self._pcd = Cls(self.pcd_shapes, **pcd_kwargs)
@@ -58,7 +61,8 @@ class MultiEncoder(nn.Module):
 
     def pcd(self, x):
         inputs = {k: x[k] for k in self.pcd_shapes}
-        outputs = self._pcd(inputs)
+        data = self._pcd_inputs(inputs)
+        outputs = self._pcd(data)
         global_z, local_z = outputs
         return global_z, local_z
 
