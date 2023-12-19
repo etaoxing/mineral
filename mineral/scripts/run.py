@@ -85,9 +85,6 @@ def save_run_metadata(logdir, run_name, run_id, resolved_config):
 
 
 def main(config: DictConfig):
-    if config.ckpt:
-        config.ckpt = to_absolute_path(config.ckpt)
-
     if 'isaacgym' in sys.modules or 'isaacgymenvs' in sys.modules:
         from isaacgymenvs.utils.utils import set_np_formatting, set_seed
     else:
@@ -99,6 +96,13 @@ def main(config: DictConfig):
 
     # set numpy formatting for printing only
     set_np_formatting()
+
+    # ---------- Setup Run ----------
+    logdir = config.logdir
+    os.makedirs(logdir, exist_ok=True)
+
+    if config.ckpt:
+        config.ckpt = to_absolute_path(config.ckpt)
 
     if config.multi_gpu:
         from accelerate import Accelerator
@@ -132,23 +136,6 @@ def main(config: DictConfig):
     resolved_config = OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
     print(pprint.pformat(resolved_config, compact=True, indent=1), '\n')
 
-    cprint('Start Building the Environment', 'green', attrs=['bold'])
-    env = make_envs(config)
-    print('-' * 20)
-    print(f'Env: {env}')
-
-    datasets = make_datasets(config, env)
-    print(f'Datasets: {datasets}')
-
-    logdir = config.logdir
-    os.makedirs(logdir, exist_ok=True)
-
-    from .. import agents
-
-    AgentCls = getattr(agents, config.agent.algo)
-    print(f'AgentCls: {AgentCls}')
-    agent = AgentCls(env, logdir, config, accelerator=accelerator, datasets=datasets)
-
     if rank == 0:
         os.environ['WANDB_START_METHOD'] = 'thread'
         # connect to wandb
@@ -161,6 +148,21 @@ def main(config: DictConfig):
         run_name, run_id = wandb_run.name, wandb_run.id
         print(f'run_name: {run_name}, run_id: {run_id}')
         save_run_metadata(logdir, run_name, run_id, resolved_config)
+
+    # ---------- Run Agent ----------
+    cprint('Making Envs', 'green', attrs=['bold'])
+    env = make_envs(config)
+    print('-' * 20)
+    print(f'Env: {env}')
+
+    datasets = make_datasets(config, env)
+    print(f'Datasets: {datasets}')
+
+    from .. import agents
+
+    AgentCls = getattr(agents, config.agent.algo)
+    print(f'AgentCls: {AgentCls}')
+    agent = AgentCls(env, logdir, config, accelerator=accelerator, datasets=datasets)
 
     if config.ckpt:
         print(f'Loading checkpoint: {config.ckpt}')
