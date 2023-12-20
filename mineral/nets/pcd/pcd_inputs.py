@@ -1,3 +1,5 @@
+import re
+
 import torch
 import torch.nn as nn
 
@@ -9,6 +11,11 @@ class PCDInputs(nn.Module):
         self.x_keys = x_keys
         self.pos_keys = pos_keys
         self.pyg_data = pyg_data
+
+        if self.x_keys is not None:
+            self.x_keys = re.compile(self.x_keys)
+        if self.pos_keys is not None:
+            self.pos_keys = re.compile(self.pos_keys)
 
         if pyg_data:
             import torch_geometric.transforms as T
@@ -30,7 +37,12 @@ class PCDInputs(nn.Module):
 
     def get_x_and_pos(self, d):
         x, pos = None, None  # -> (node features), (xyz position)
-        # TODO
+        # TODO: support concating multiple pcds
+        for k, v in d.items():
+            if self.x_keys is not None and re.match(self.x_keys, k):
+                x = v
+            if self.pos_keys is not None and re.match(self.pos_keys, k):
+                pos = v
         return x, pos
 
     def forward(self, d):
