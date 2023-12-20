@@ -37,7 +37,6 @@ class PCDInputs(nn.Module):
         x, pos = self.get_x_and_pos(d)
 
         if self.pyg_data:
-            x, pos = self.get_x_and_pos(d)
             batch = torch.arange(pos.shape[0], device=pos.device).repeat_interleave(pos.shape[1])
             B, D = pos.shape[:2]
             pos = pos.reshape(-1, *pos.shape[2:])
