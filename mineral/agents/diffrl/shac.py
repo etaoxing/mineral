@@ -5,128 +5,99 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
-from multiprocessing.sharedctypes import Value
-import sys, os
+import sys
+import os
 
 from torch.nn.utils.clip_grad import clip_grad_norm_
-
-project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(project_dir)
 
 import time
 import numpy as np
 import copy
 import torch
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 import yaml
 
-import dflex as df
+from . import models
 
-import envs
-import models.actor
-import models.critic
-from utils.common import *
-import utils.torch_utils as tu
-from utils.running_mean_std import RunningMeanStd
-from utils.dataset import CriticDataset
-from utils.time_report import TimeReport
-from utils.average_meter import AverageMeter
+from .utils import RunningMeanStd, CriticDataset, grad_norm, TimeReport, AverageMeter
+from ..actorcritic_base import ActorCriticBase
 
-class SHAC:
-    def __init__(self, cfg):
-        env_fn = getattr(envs, cfg["params"]["diff_env"]["name"])
 
-        seeding(cfg["params"]["general"]["seed"])
-        self.env = env_fn(num_envs = cfg["params"]["config"]["num_actors"], \
-                            device = cfg["params"]["general"]["device"], \
-                            render = cfg["params"]["general"]["render"], \
-                            seed = cfg["params"]["general"]["seed"], \
-                            episode_length=cfg["params"]["diff_env"].get("episode_length", 250), \
-                            stochastic_init = cfg["params"]["diff_env"].get("stochastic_env", True), \
-                            MM_caching_frequency = cfg["params"]['diff_env'].get('MM_caching_frequency', 1), \
-                            no_grad = False)
-
-        print('num_envs = ', self.env.num_envs)
-        print('num_actions = ', self.env.num_actions)
-        print('num_obs = ', self.env.num_obs)
+class SHAC(ActorCriticBase):
+    def __init__(self, full_cfg, **kwargs):
+        self.network_config = full_cfg.agent.network
+        self.shac_config = full_cfg.agent.shac
+        self.num_actors = self.shac_config.num_actors
+        self.max_agent_steps = int(self.shac_config.max_agent_steps)
+        super().__init__(full_cfg, **kwargs)
 
         self.num_envs = self.env.num_envs
         self.num_obs = self.env.num_obs
         self.num_actions = self.env.num_actions
         self.max_episode_length = self.env.episode_length
-        self.device = cfg["params"]["general"]["device"]
 
-        self.gamma = cfg['params']['config'].get('gamma', 0.99)
-        
-        self.critic_method = cfg['params']['config'].get('critic_method', 'one-step') # ['one-step', 'td-lambda']
+        self.gamma = self.shac_config.get('gamma', 0.99)
+        self.critic_method = self.shac_config.get('critic_method', 'one-step')  # ['one-step', 'td-lambda']
         if self.critic_method == 'td-lambda':
-            self.lam = cfg['params']['config'].get('lambda', 0.95)
+            self.lam = self.shac_config.get('lambda', 0.95)
 
-        self.steps_num = cfg["params"]["config"]["steps_num"]
-        self.max_epochs = cfg["params"]["config"]["max_epochs"]
-        self.actor_lr = float(cfg["params"]["config"]["actor_learning_rate"])
-        self.critic_lr = float(cfg['params']['config']['critic_learning_rate'])
-        self.lr_schedule = cfg['params']['config'].get('lr_schedule', 'linear')
-        
-        self.target_critic_alpha = cfg['params']['config'].get('target_critic_alpha', 0.4)
+        self.steps_num = self.shac_config.steps_num
+        self.max_epochs = self.shac_config.max_epochs
+
+        self.actor_lr = float(self.shac_config["actor_learning_rate"])
+        self.critic_lr = float(self.shac_config['critic_learning_rate'])
+        self.lr_schedule = self.shac_config.get('lr_schedule', 'linear')
+
+        self.target_critic_alpha = self.shac_config.get('target_critic_alpha', 0.4)
 
         self.obs_rms = None
-        if cfg['params']['config'].get('obs_rms', False):
+        if self.shac_config.get('obs_rms', False):
             self.obs_rms = RunningMeanStd(shape = (self.num_obs), device = self.device)
-            
+
         self.ret_rms = None
-        if cfg['params']['config'].get('ret_rms', False):
+        if self.shac_config.get('ret_rms', False):
             self.ret_rms = RunningMeanStd(shape = (), device = self.device)
 
-        self.rew_scale = cfg['params']['config'].get('rew_scale', 1.0)
+        self.rew_scale = self.shac_config.get('rew_scale', 1.0)
 
-        self.critic_iterations = cfg['params']['config'].get('critic_iterations', 16)
-        self.num_batch = cfg['params']['config'].get('num_batch', 4)
+        self.critic_iterations = self.shac_config.get('critic_iterations', 16)
+        self.num_batch = self.shac_config.get('num_batch', 4)
         self.batch_size = self.num_envs * self.steps_num // self.num_batch
-        self.name = cfg['params']['config'].get('name', "Ant")
 
-        self.truncate_grad = cfg["params"]["config"]["truncate_grads"]
-        self.grad_norm = cfg["params"]["config"]["grad_norm"]
-        
-        if cfg['params']['general']['train']:
-            self.log_dir = cfg["params"]["general"]["logdir"]
-            os.makedirs(self.log_dir, exist_ok = True)
-            # save config
-            save_cfg = copy.deepcopy(cfg)
-            if 'general' in save_cfg['params']:
-                deleted_keys = []
-                for key in save_cfg['params']['general'].keys():
-                    if key in save_cfg['params']['config']:
-                        deleted_keys.append(key)
-                for key in deleted_keys:
-                    del save_cfg['params']['general'][key]
+        self.truncate_grad = self.shac_config["truncate_grads"]
+        self.grad_norm = self.shac_config["grad_norm"]
 
-            yaml.dump(save_cfg, open(os.path.join(self.log_dir, 'cfg.yaml'), 'w'))
-            self.writer = SummaryWriter(os.path.join(self.log_dir, 'log'))
+        self._training = True
+
+        if self._training:
+            os.makedirs(self.logdir, exist_ok = True)
+            self.writer = SummaryWriter(os.path.join(self.logdir, 'tb'))
             # save interval
-            self.save_interval = cfg["params"]["config"].get("save_interval", 500)
+            self.save_interval = self.shac_config.get("save_interval", 500)
             # stochastic inference
             self.stochastic_evaluation = True
         else:
-            self.stochastic_evaluation = not (cfg['params']['config']['player'].get('determenistic', False) or cfg['params']['config']['player'].get('deterministic', False))
+            self.stochastic_evaluation = not (self.shac_config['player'].get('determenistic', False) or self.shac_config['player'].get('deterministic', False))
             self.steps_num = self.env.episode_length
 
         # create actor critic network
-        self.actor_name = cfg["params"]["network"].get("actor", 'ActorStochasticMLP') # choices: ['ActorDeterministicMLP', 'ActorStochasticMLP']
-        self.critic_name = cfg["params"]["network"].get("critic", 'CriticMLP')
-        actor_fn = getattr(models.actor, self.actor_name)
-        self.actor = actor_fn(self.num_obs, self.num_actions, cfg['params']['network'], device = self.device)
-        critic_fn = getattr(models.critic, self.critic_name)
-        self.critic = critic_fn(self.num_obs, cfg['params']['network'], device = self.device)
+        self.actor_name = self.network_config.get("actor", 'ActorStochasticMLP') # choices: ['ActorDeterministicMLP', 'ActorStochasticMLP']
+        self.critic_name = self.network_config.get("critic", 'CriticMLP')
+        actor_fn = getattr(models, self.actor_name)
+        actor_kwargs = self.network_config.get("actor_kwargs", {})
+        self.actor = actor_fn(self.num_obs, self.num_actions, **actor_kwargs, device = self.device)
+        critic_fn = getattr(models, self.critic_name)
+        critic_kwargs = self.network_config.get("critic_kwargs", {})
+        self.critic = critic_fn(self.num_obs, self.num_actions, **critic_kwargs, device = self.device)
         self.all_params = list(self.actor.parameters()) + list(self.critic.parameters())
         self.target_critic = copy.deepcopy(self.critic)
-    
-        if cfg['params']['general']['train']:
+
+        if self._training:
             self.save('init_policy')
-    
+
         # initialize optimizer
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), betas = cfg['params']['config']['betas'], lr = self.actor_lr)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), betas = cfg['params']['config']['betas'], lr = self.critic_lr)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), betas = self.shac_config['betas'], lr = self.actor_lr)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), betas = self.shac_config['betas'], lr = self.critic_lr)
 
         # replay buffer
         self.obs_buf = torch.zeros((self.steps_num, self.num_envs, self.num_obs), dtype = torch.float32, device = self.device)
@@ -215,7 +186,7 @@ class SHAC:
                 with torch.no_grad():
                     self.ret = self.ret * self.gamma + rew
                     self.ret_rms.update(self.ret)
-                    
+
                 rew = rew / torch.sqrt(ret_var + 1e-6)
 
             self.episode_length += 1
@@ -272,6 +243,7 @@ class SHAC:
                 self.episode_discounted_loss -= self.episode_gamma * raw_rew
                 self.episode_gamma *= self.gamma
                 if len(done_env_ids) > 0:
+                    done_env_ids = done_env_ids.detach().cpu()
                     self.episode_loss_meter.update(self.episode_loss[done_env_ids])
                     self.episode_discounted_loss_meter.update(self.episode_discounted_loss[done_env_ids])
                     self.episode_length_meter.update(self.episode_length[done_env_ids])
@@ -375,8 +347,8 @@ class SHAC:
     @torch.no_grad()
     def run(self, num_games):
         mean_policy_loss, mean_policy_discounted_loss, mean_episode_length = self.evaluate_policy(num_games = num_games, deterministic = not self.stochastic_evaluation)
-        print_info('mean episode loss = {}, mean discounted loss = {}, mean episode length = {}'.format(mean_policy_loss, mean_policy_discounted_loss, mean_episode_length))
-        
+        print('mean episode loss = {}, mean discounted loss = {}, mean episode length = {}'.format(mean_policy_loss, mean_policy_discounted_loss, mean_episode_length))
+
     def train(self):
         self.start_time = time.time()
 
@@ -412,11 +384,11 @@ class SHAC:
             self.time_report.end_timer("backward simulation")
 
             with torch.no_grad():
-                self.grad_norm_before_clip = tu.grad_norm(self.actor.parameters())
+                self.grad_norm_before_clip = grad_norm(self.actor.parameters())
                 if self.truncate_grad:
                     clip_grad_norm_(self.actor.parameters(), self.grad_norm)
-                self.grad_norm_after_clip = tu.grad_norm(self.actor.parameters()) 
-                
+                self.grad_norm_after_clip = grad_norm(self.actor.parameters()) 
+
                 # sanity check
                 if torch.isnan(self.grad_norm_before_clip) or self.grad_norm_before_clip > 1000000.:
                     print('NaN gradient')
@@ -500,10 +472,10 @@ class SHAC:
                 mean_policy_discounted_loss = self.episode_discounted_loss_meter.get_mean()
 
                 if mean_policy_loss < self.best_policy_loss:
-                    print_info("save best policy with loss {:.2f}".format(mean_policy_loss))
+                    print("save best policy with loss {:.2f}".format(mean_policy_loss))
                     self.save()
                     self.best_policy_loss = mean_policy_loss
-                
+
                 self.writer.add_scalar('policy_loss/step', mean_policy_loss, self.step_count)
                 self.writer.add_scalar('policy_loss/time', mean_policy_loss, time_elapse)
                 self.writer.add_scalar('policy_loss/iter', mean_policy_loss, self.iter_count)
@@ -528,7 +500,7 @@ class SHAC:
             self.writer.flush()
         
             if self.save_interval > 0 and (self.iter_count % self.save_interval == 0):
-                self.save(self.name + "policy_iter{}_reward{:.3f}".format(self.iter_count, -mean_policy_loss))
+                self.save("policy_iter{}_reward{:.3f}".format(self.iter_count, -mean_policy_loss))
 
             # update target critic
             with torch.no_grad():
@@ -547,9 +519,9 @@ class SHAC:
         self.episode_loss_his = np.array(self.episode_loss_his)
         self.episode_discounted_loss_his = np.array(self.episode_discounted_loss_his)
         self.episode_length_his = np.array(self.episode_length_his)
-        np.save(open(os.path.join(self.log_dir, 'episode_loss_his.npy'), 'wb'), self.episode_loss_his)
-        np.save(open(os.path.join(self.log_dir, 'episode_discounted_loss_his.npy'), 'wb'), self.episode_discounted_loss_his)
-        np.save(open(os.path.join(self.log_dir, 'episode_length_his.npy'), 'wb'), self.episode_length_his)
+        np.save(open(os.path.join(self.logdir, 'episode_loss_his.npy'), 'wb'), self.episode_loss_his)
+        np.save(open(os.path.join(self.logdir, 'episode_discounted_loss_his.npy'), 'wb'), self.episode_discounted_loss_his)
+        np.save(open(os.path.join(self.logdir, 'episode_length_his.npy'), 'wb'), self.episode_length_his)
 
         # evaluate the final policy's performance
         self.run(self.num_envs)
@@ -558,12 +530,12 @@ class SHAC:
     
     def play(self, cfg):
         self.load(cfg['params']['general']['checkpoint'])
-        self.run(cfg['params']['config']['player']['games_num'])
+        self.run(self.shac_config['player']['games_num'])
         
     def save(self, filename = None):
         if filename is None:
             filename = 'best_policy'
-        torch.save([self.actor, self.critic, self.target_critic, self.obs_rms, self.ret_rms], os.path.join(self.log_dir, "{}.pt".format(filename)))
+        torch.save([self.actor, self.critic, self.target_critic, self.obs_rms, self.ret_rms], os.path.join(self.logdir, "{}.pt".format(filename)))
     
     def load(self, path):
         checkpoint = torch.load(path)

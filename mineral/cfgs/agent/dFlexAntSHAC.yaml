@@ -1,0 +1,46 @@
+seed: ${..seed}
+algo: SHAC
+
+network:
+  encoder: null
+  actor: ActorStochasticMLP
+  actor_kwargs:
+    hidden_dims: [128, 64, 32]
+    activation: elu
+  critic: CriticMLP
+  critic_kwargs:
+    hidden_dims: [64, 64]
+    activation: elu
+
+shac:
+  multi_gpu: ${...multi_gpu}
+  num_actors: ${...task.env.numEnvs}
+
+  reward_shaper:
+    fn: scale
+    scale: 1.0
+
+  max_agent_steps: 6e6
+
+  optim_type: Adam
+  actor_optim_kwargs: {lr: 2e-3}
+  critic_optim_kwargs: {lr: 2e-3}
+  max_grad_norm: 1.0
+
+  actor_learning_rate: 2e-3
+  critic_learning_rate: 2e-3
+  lr_schedule: linear
+  target_critic_alpha: 0.2
+  obs_rms: True
+  ret_rms: False
+  critic_iterations: 16
+  critic_method: td-lambda
+  lambda: 0.95
+  num_batch: 4
+  gamma: 0.99
+  betas: [0.7, 0.95]
+  max_epochs: 2000
+  steps_num: 32
+  grad_norm: 1.0
+  truncate_grads: True
+  save_interval: 400
