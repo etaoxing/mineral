@@ -20,27 +20,24 @@ shac:
     fn: scale
     scale: 1.0
 
-  max_agent_steps: 6e6
+  max_agent_steps: 5e6
+  horizon_len: 32
+  num_batch: 4
+  max_epochs: 2000
 
   optim_type: Adam
-  actor_optim_kwargs: {lr: 2e-3}
-  critic_optim_kwargs: {lr: 2e-3}
+  actor_optim_kwargs: {lr: 2e-3, betas: [0.7, 0.95]}
+  critic_optim_kwargs: {lr: 2e-3, betas: [0.7, 0.95]}
+  lr_schedule: linear  # linear | constant
   max_grad_norm: 1.0
-
-  actor_learning_rate: 2e-3
-  critic_learning_rate: 2e-3
-  lr_schedule: linear
-  target_critic_alpha: 0.2
-  obs_rms: True
-  ret_rms: False
-  critic_iterations: 16
-  critic_method: td-lambda
-  lambda: 0.95
-  num_batch: 4
-  gamma: 0.99
-  betas: [0.7, 0.95]
-  max_epochs: 2000
-  steps_num: 32
-  grad_norm: 1.0
   truncate_grads: True
+
+  gamma: 0.99
+  critic_method: td-lambda  # td-lambda | one-step
+  lambda: 0.95
+  target_critic_alpha: 0.2
+  critic_iterations: 16
+
+  normalize_input: True
+  normalize_ret: False
   save_interval: 400
