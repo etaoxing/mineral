@@ -413,6 +413,33 @@ class SHAC(ActorCriticBase):
 
         self.actor_optim.step(actor_closure).detach().item()
 
+    def update_critic(self, dataset):
+        self.value_loss = 0.0
+        for j in range(self.critic_iterations):
+            total_critic_loss = 0.0
+            batch_cnt = 0
+            for i in range(len(dataset)):
+                batch_sample = dataset[i]
+                b_obs, b_target_values = batch_sample
+
+                self.critic_optim.zero_grad()
+                training_critic_loss = self.compute_critic_loss(b_obs, b_target_values)
+                training_critic_loss.backward()
+
+                # ugly fix for simulation nan problem
+                for params in self.critic.parameters():
+                    params.grad.nan_to_num_(0.0, 0.0, 0.0)
+
+                if self.shac_config.truncate_grads:
+                    nn.utils.clip_grad_norm_(self.critic.parameters(), self.shac_config.max_grad_norm)
+
+                self.critic_optim.step()
+
+                total_critic_loss += training_critic_loss
+                batch_cnt += 1
+
+            self.value_loss = (total_critic_loss / batch_cnt).detach().cpu().item()
+            print('value iter {}/{}, loss = {:7.6f}'.format(j + 1, self.critic_iterations, self.value_loss), end='\r')
 
     def initialize_env(self):
         self.env.clear_grad()
@@ -465,33 +492,7 @@ class SHAC(ActorCriticBase):
             self.timer.end("train/make_critic_dataset")
 
             self.timer.start("train/update_critic")
-            self.value_loss = 0.0
-            for j in range(self.critic_iterations):
-                total_critic_loss = 0.0
-                batch_cnt = 0
-                for i in range(len(dataset)):
-                    batch_sample = dataset[i]
-                    b_obs, b_target_values = batch_sample
-
-                    self.critic_optim.zero_grad()
-                    training_critic_loss = self.compute_critic_loss(b_obs, b_target_values)
-                    training_critic_loss.backward()
-
-                    # ugly fix for simulation nan problem
-                    for params in self.critic.parameters():
-                        params.grad.nan_to_num_(0.0, 0.0, 0.0)
-
-                    if self.shac_config.truncate_grads:
-                        nn.utils.clip_grad_norm_(self.critic.parameters(), self.shac_config.max_grad_norm)
-
-                    self.critic_optim.step()
-
-                    total_critic_loss += training_critic_loss
-                    batch_cnt += 1
-
-                self.value_loss = (total_critic_loss / batch_cnt).detach().cpu().item()
-                print('value iter {}/{}, loss = {:7.6f}'.format(j + 1, self.critic_iterations, self.value_loss), end='\r')
-
+            self.update_critic(dataset)
             self.timer.end("train/update_critic")
 
             self.epoch += 1
