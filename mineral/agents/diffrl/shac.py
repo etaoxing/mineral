@@ -169,6 +169,7 @@ class SHAC(ActorCriticBase):
                 obs_rms = deepcopy(self.obs_rms)
 
             if self.ret_rms is not None:
+                # TODO: not using mean centering of ret_rms?
                 ret_var = self.ret_rms.running_var.clone()
 
         # initialize trajectory to cut off gradients between episodes.
@@ -383,27 +384,7 @@ class SHAC(ActorCriticBase):
         critic_loss = ((predicted_values - target_values) ** 2).mean()
         return critic_loss
 
-    def initialize_env(self):
-        self.env.clear_grad()
-        self.env.reset()
-
-    @torch.no_grad()
-    def run(self, num_games):
-        mean_policy_loss, mean_policy_discounted_loss, mean_episode_length = self.evaluate_policy(
-            num_games=num_games, deterministic=not self.stochastic_evaluation
-        )
-        print(
-            f'mean episode loss = {mean_policy_loss},',
-            f'mean discounted loss = {mean_policy_discounted_loss},',
-            f'mean episode length = {mean_episode_length}',
-        )
-
-    def train(self):
-        self.start_time = time.time()
-
-        # initializations
-        self.initialize_env()
-
+    def update_actor(self):
         def actor_closure():
             self.actor_optim.zero_grad()
             self.timer.start("train/actor_closure/actor_loss")
@@ -430,6 +411,30 @@ class SHAC(ActorCriticBase):
             self.timer.end("train/actor_closure/actor_loss")
             return actor_loss
 
+        self.actor_optim.step(actor_closure).detach().item()
+
+
+    def initialize_env(self):
+        self.env.clear_grad()
+        self.env.reset()
+
+    @torch.no_grad()
+    def run(self, num_games):
+        mean_policy_loss, mean_policy_discounted_loss, mean_episode_length = self.evaluate_policy(
+            num_games=num_games, deterministic=not self.stochastic_evaluation
+        )
+        print(
+            f'mean episode loss = {mean_policy_loss},',
+            f'mean discounted loss = {mean_policy_discounted_loss},',
+            f'mean episode length = {mean_episode_length}',
+        )
+
+    def train(self):
+        self.start_time = time.time()
+
+        # initializations
+        self.initialize_env()
+
         # main training process
         for epoch in range(self.max_epochs):
             time_start_epoch = time.time()
@@ -448,7 +453,7 @@ class SHAC(ActorCriticBase):
 
             # train actor
             self.timer.start("train/update_actor")
-            self.actor_optim.step(actor_closure).detach().item()
+            self.update_actor()
             self.timer.end("train/update_actor")
 
             # train critic
