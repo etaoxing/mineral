@@ -115,33 +115,22 @@ class SHAC(ActorCriticBase):
         # --- Replay Buffer ---
         assert self.num_actors == self.env.num_envs
         T, B = self.horizon_len, self.num_envs
-        self.obs_buf = {k: torch.zeros((T, B) + v, dtype=torch.float32, device=self.device) for k, v in self.obs_space.items()}
-        self.rew_buf = torch.zeros((T, B), dtype=torch.float32, device=self.device)
-        self.done_mask = torch.zeros((T, B), dtype=torch.float32, device=self.device)
-        self.next_values = torch.zeros((T, B), dtype=torch.float32, device=self.device)
-        self.target_values = torch.zeros((T, B), dtype=torch.float32, device=self.device)
-        self.ret = torch.zeros((B), dtype=torch.float32, device=self.device)
+        self.create_buffers(T, B)
 
         self.reward_shaper = RewardShaper(**self.shac_config.reward_shaper)
-
-        # for kl divergence computing
-        self.old_mus = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
-        self.old_sigmas = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
-        self.mus = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
-        self.sigmas = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
 
         # counting variables
         self.epoch = 0
         self.agent_steps = 0
 
         # loss variables
+        self.episode_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        self.episode_discounted_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        self.episode_length = torch.zeros(self.num_envs, dtype=int)
+        self.episode_gamma = torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
         self.episode_length_his = []
         self.episode_loss_his = []
         self.episode_discounted_loss_his = []
-        self.episode_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
-        self.episode_discounted_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
-        self.episode_gamma = torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
-        self.episode_length = torch.zeros(self.num_envs, dtype=int)
         self.best_policy_loss = np.inf
         self.actor_loss = np.inf
         self.value_loss = np.inf
@@ -153,6 +142,20 @@ class SHAC(ActorCriticBase):
 
         # --- Timing ---
         self.timer = Timer()
+
+    def create_buffers(self, T, B):
+        self.obs_buf = {k: torch.zeros((T, B) + v, dtype=torch.float32, device=self.device) for k, v in self.obs_space.items()}
+        self.rew_buf = torch.zeros((T, B), dtype=torch.float32, device=self.device)
+        self.done_mask = torch.zeros((T, B), dtype=torch.float32, device=self.device)
+        self.next_values = torch.zeros((T, B), dtype=torch.float32, device=self.device)
+        self.target_values = torch.zeros((T, B), dtype=torch.float32, device=self.device)
+        self.ret = torch.zeros((B), dtype=torch.float32, device=self.device)
+
+        # for kl divergence computing
+        self.old_mus = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
+        self.old_sigmas = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
+        self.mus = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
+        self.sigmas = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
 
     def compute_actor_loss(self, deterministic=False):
         rew_acc = torch.zeros((self.horizon_len + 1, self.num_envs), dtype=torch.float32, device=self.device)
@@ -400,10 +403,6 @@ class SHAC(ActorCriticBase):
 
         # initializations
         self.initialize_env()
-        self.episode_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
-        self.episode_discounted_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
-        self.episode_length = torch.zeros(self.num_envs, dtype=int)
-        self.episode_gamma = torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
 
         def actor_closure():
             self.actor_optim.zero_grad()
