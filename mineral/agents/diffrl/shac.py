@@ -49,18 +49,7 @@ class SHAC(ActorCriticBase):
         self.num_batch = self.shac_config.get('num_batch', 4)
         self.batch_size = self.num_envs * self.horizon_len // self.num_batch
 
-        rms_config = dict(eps=1e-5, correction=0, initial_count=1e-4, dtype=torch.float64)  # unbiased=False -> correction=0
-
-        self.obs_rms = None
-        if self.shac_config.normalize_input:
-            self.obs_rms = normalizers.RunningMeanStd((self.num_obs,), **rms_config).to(self.device)
-
-        self.ret_rms = None
-        if self.shac_config.normalize_ret:
-            self.ret_rms = normalizers.RunningMeanStd((), **rms_config).to(self.device)
-
         self._training = True
-
         if self._training:
             os.makedirs(self.logdir, exist_ok=True)
             self.writer = SummaryWriter(os.path.join(self.logdir, 'tb'))
@@ -76,16 +65,21 @@ class SHAC(ActorCriticBase):
             self.horizon_len = self.env.episode_length
 
         # --- Normalizers ---
-        # if self.normalize_input:
-        #     self.obs_rms = {}
-        #     for k, v in self.obs_space.items():
-        #         if re.match(self.obs_rms_keys, k):
-        #             self.obs_rms[k] = normalizers.RunningMeanStd(v, **rms_config)
-        #         else:
-        #             self.obs_rms[k] = normalizers.Identity()
-        #     self.obs_rms = nn.ModuleDict(self.obs_rms).to(self.device)
-        # else:
-        #     self.obs_rms = None
+        rms_config = dict(eps=1e-5, correction=0, initial_count=1e-4, dtype=torch.float64)  # unbiased=False -> correction=0
+        if self.shac_config.normalize_input:
+            self.obs_rms = {}
+            for k, v in self.obs_space.items():
+                if re.match(self.obs_rms_keys, k):
+                    self.obs_rms[k] = normalizers.RunningMeanStd(v, **rms_config)
+                else:
+                    self.obs_rms[k] = normalizers.Identity()
+            self.obs_rms = nn.ModuleDict(self.obs_rms).to(self.device)
+        else:
+            self.obs_rms = None
+
+        self.ret_rms = None
+        if self.shac_config.normalize_ret:
+            self.ret_rms = normalizers.RunningMeanStd((), **rms_config).to(self.device)
 
         # --- Model ---
         obs_dim = self.obs_space['obs']
@@ -124,7 +118,7 @@ class SHAC(ActorCriticBase):
         # --- Replay Buffer ---
         assert self.num_actors == self.env.num_envs
         T, B = self.horizon_len, self.num_envs
-        self.obs_buf = torch.zeros((T, B, self.num_obs), dtype=torch.float32, device=self.device)
+        self.obs_buf = {k: torch.zeros((T, B) + v, dtype=torch.float32, device=self.device) for k, v in self.obs_space.items()}
         self.rew_buf = torch.zeros((T, B), dtype=torch.float32, device=self.device)
         self.done_mask = torch.zeros((T, B), dtype=torch.float32, device=self.device)
         self.next_values = torch.zeros((T, B), dtype=torch.float32, device=self.device)
@@ -179,20 +173,26 @@ class SHAC(ActorCriticBase):
 
         # initialize trajectory to cut off gradients between episodes.
         obs = self.env.initialize_trajectory()
+        obs = self._convert_obs(obs)
+
         if self.obs_rms is not None:
             # update obs rms
             with torch.no_grad():
-                self.obs_rms.update(obs)
+                for k, v in obs.items():
+                    self.obs_rms[k].update(v)
             # normalize the current obs
-            obs = obs_rms.normalize(obs)
+            obs = {k: obs_rms[k].normalize(v) for k, v in obs.items()}
+
         for i in range(self.horizon_len):
             # collect data for critic training
             with torch.no_grad():
-                self.obs_buf[i] = obs.clone()
+                for k, v in obs.items():
+                    self.obs_buf[k][i] = v.clone()
 
-            actions = self.actor(obs, deterministic=deterministic)
+            actions = self.actor(obs['obs'], deterministic=deterministic)
 
             obs, rew, done, extra_info = self.env.step(torch.tanh(actions))
+            obs = self._convert_obs(obs)
 
             with torch.no_grad():
                 raw_rew = rew.clone()
@@ -203,40 +203,51 @@ class SHAC(ActorCriticBase):
             if self.obs_rms is not None:
                 # update obs rms
                 with torch.no_grad():
-                    self.obs_rms.update(obs)
+                    for k, v in obs.items():
+                        self.obs_rms[k].update(v)
                 # normalize the current obs
-                obs = obs_rms.normalize(obs)
+                obs = {k: obs_rms[k].normalize(v) for k, v in obs.items()}
 
             if self.ret_rms is not None:
                 # update ret rms
                 with torch.no_grad():
                     self.ret = self.ret * self.gamma + rew
                     self.ret_rms.update(self.ret)
-
+                # normalize the current rew
                 rew = rew / torch.sqrt(ret_var + 1e-6)
 
             self.episode_length += 1
 
             done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
 
-            next_values[i + 1] = self.critic_target(obs).squeeze(-1)
+            next_values[i + 1] = self.critic_target(obs['obs']).squeeze(-1)
 
-            for id in done_env_ids:
+            if len(done_env_ids) > 0:
                 terminal_obs = extra_info['obs_before_reset']
-                if (
-                    torch.isnan(terminal_obs[id]).sum() > 0
-                    or torch.isinf(terminal_obs[id]).sum() > 0
-                    or (torch.abs(terminal_obs[id]) > 1e6).sum() > 0
-                ):  # ugly fix for nan values
-                    next_values[i + 1, id] = 0.0
-                elif self.episode_length[id] < self.max_episode_length:  # early termination
-                    next_values[i + 1, id] = 0.0
-                else:  # otherwise, use terminal value critic to estimate the long-term performance
-                    if self.obs_rms is not None:
-                        real_obs = obs_rms.normalize(terminal_obs[id])
-                    else:
-                        real_obs = terminal_obs[id]
-                    next_values[i + 1, id] = self.critic_target(real_obs).squeeze(-1)
+                terminal_obs = self._convert_obs(terminal_obs)
+
+                for id in done_env_ids:
+                    nan = False
+                    # TODO: some elements of obs_dict (for logging) may be nan, add regex to ignore these
+                    for k, v in terminal_obs.items():
+                        if (
+                            (torch.isnan(v[id]).sum() > 0)
+                            or (torch.isinf(v[id]).sum() > 0)
+                            or ((torch.abs(v[id]) > 1e6).sum() > 0)
+                        ):  # ugly fix for nan values
+                            print(f'nan value: {k}')
+                            nan = True
+                            break
+
+                    if nan:
+                        next_values[i + 1, id] = 0.0
+                    elif self.episode_length[id] < self.max_episode_length:  # early termination
+                        next_values[i + 1, id] = 0.0
+                    else:  # otherwise, use terminal value critic to estimate the long-term performance
+                        real_obs = {k: v[[id]] for k, v in terminal_obs.items()}
+                        if self.obs_rms is not None:
+                            real_obs = {k: obs_rms[k].normalize(v) for k, v in real_obs.items()}
+                        next_values[i + 1, id] = self.critic_target(real_obs['obs']).squeeze(-1)
 
             if (next_values[i + 1] > 1e6).sum() > 0 or (next_values[i + 1] < -1e6).sum() > 0:
                 print('next value error')
@@ -247,7 +258,6 @@ class SHAC(ActorCriticBase):
             if i < self.horizon_len - 1:
                 a_loss = -rew_acc[i + 1, done_env_ids] - self.gamma * gamma[done_env_ids] * next_values[i + 1, done_env_ids]
                 actor_loss = actor_loss + a_loss.sum()
-
             else:
                 # terminate all envs at the end of optimization iteration
                 a_loss = -rew_acc[i + 1, :] - self.gamma * gamma * next_values[i + 1, :]
@@ -314,15 +324,17 @@ class SHAC(ActorCriticBase):
         episode_discounted_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
 
         obs = self.env.reset()
+        obs = self._convert_obs(obs)
 
         games_cnt = 0
         while games_cnt < num_games:
             if self.obs_rms is not None:
-                obs = self.obs_rms.normalize(obs)
+                obs = {k: self.obs_rms[k].normalize(v) for k, v in obs.items()}
 
-            actions = self.actor(obs, deterministic=deterministic)
+            actions = self.actor(obs['obs'], deterministic=deterministic)
 
             obs, rew, done, _ = self.env.step(torch.tanh(actions))
+            obs = self._convert_obs(obs)
 
             episode_length += 1
 
@@ -366,9 +378,8 @@ class SHAC(ActorCriticBase):
         else:
             raise NotImplementedError(self.critic_method)
 
-    def compute_critic_loss(self, batch_sample):
-        predicted_values = self.critic(batch_sample['obs']).squeeze(-1)
-        target_values = batch_sample['target_values']
+    def compute_critic_loss(self, obs, target_values):
+        predicted_values = self.critic(obs['obs']).squeeze(-1)
         critic_loss = ((predicted_values - target_values) ** 2).mean()
         return critic_loss
 
@@ -459,8 +470,10 @@ class SHAC(ActorCriticBase):
                 batch_cnt = 0
                 for i in range(len(dataset)):
                     batch_sample = dataset[i]
+                    b_obs, b_target_values = batch_sample
+
                     self.critic_optim.zero_grad()
-                    training_critic_loss = self.compute_critic_loss(batch_sample)
+                    training_critic_loss = self.compute_critic_loss(b_obs, b_target_values)
                     training_critic_loss.backward()
 
                     # ugly fix for simulation nan problem
