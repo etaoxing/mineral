@@ -495,6 +495,13 @@ class SHAC(ActorCriticBase):
             self.update_critic(dataset)
             self.timer.end("train/update_critic")
 
+            # update target critic
+            with torch.no_grad():
+                alpha = self.target_critic_alpha
+                for param, param_targ in zip(self.critic.parameters(), self.critic_target.parameters()):
+                    param_targ.data.mul_(alpha)
+                    param_targ.data.add_((1.0 - alpha) * param.data)
+
             self.epoch += 1
 
             time_end_epoch = time.time()
@@ -551,13 +558,6 @@ class SHAC(ActorCriticBase):
 
             if self.save_interval > 0 and (self.epoch % self.save_interval == 0):
                 self.save("policy_iter{}_reward{:.3f}".format(self.epoch, -mean_policy_loss))
-
-            # update target critic
-            with torch.no_grad():
-                alpha = self.target_critic_alpha
-                for param, param_targ in zip(self.critic.parameters(), self.critic_target.parameters()):
-                    param_targ.data.mul_(alpha)
-                    param_targ.data.add_((1.0 - alpha) * param.data)
 
         timings = self.timer.stats(step=self.agent_steps)
         print(timings)
