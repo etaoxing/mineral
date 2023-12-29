@@ -16,9 +16,10 @@ import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 
 from ...common.reward_shaper import RewardShaper
+from ...common.timer import Timer
 from ..actorcritic_base import ActorCriticBase
 from . import models
-from .utils import AverageMeter, CriticDataset, RunningMeanStd, TimeReport, grad_norm
+from .utils import AverageMeter, CriticDataset, RunningMeanStd, grad_norm
 
 
 class SHAC(ActorCriticBase):
@@ -156,8 +157,8 @@ class SHAC(ActorCriticBase):
         self.episode_discounted_loss_meter = AverageMeter(1, 100).to(self.device)
         self.episode_length_meter = AverageMeter(1, 100).to(self.device)
 
-        # timer
-        self.time_report = TimeReport()
+        # --- Timing ---
+        self.timer = Timer()
 
     def compute_actor_loss(self, deterministic=False):
         rew_acc = torch.zeros((self.horizon_len + 1, self.num_envs), dtype=torch.float32, device=self.device)
@@ -386,17 +387,6 @@ class SHAC(ActorCriticBase):
     def train(self):
         self.start_time = time.time()
 
-        # add timers
-        self.time_report.add_timer("algorithm")
-        self.time_report.add_timer("compute actor loss")
-        self.time_report.add_timer("forward simulation")
-        self.time_report.add_timer("backward simulation")
-        self.time_report.add_timer("prepare critic dataset")
-        self.time_report.add_timer("actor training")
-        self.time_report.add_timer("critic training")
-
-        self.time_report.start_timer("algorithm")
-
         # initializations
         self.initialize_env()
         self.episode_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
@@ -406,16 +396,15 @@ class SHAC(ActorCriticBase):
 
         def actor_closure():
             self.actor_optim.zero_grad()
+            self.timer.start("train/actor_closure/actor_loss")
 
-            self.time_report.start_timer("compute actor loss")
-
-            self.time_report.start_timer("forward simulation")
+            self.timer.start("train/actor_closure/forward_sim")
             actor_loss = self.compute_actor_loss()
-            self.time_report.end_timer("forward simulation")
+            self.timer.end("train/actor_closure/forward_sim")
 
-            self.time_report.start_timer("backward simulation")
+            self.timer.start("train/actor_closure/backward_sim")
             actor_loss.backward()
-            self.time_report.end_timer("backward simulation")
+            self.timer.end("train/actor_closure/backward_sim")
 
             with torch.no_grad():
                 self.grad_norm_before_clip = grad_norm(self.actor.parameters())
@@ -428,8 +417,7 @@ class SHAC(ActorCriticBase):
                     print('NaN gradient')
                     raise ValueError
 
-            self.time_report.end_timer("compute actor loss")
-
+            self.timer.end("train/actor_closure/actor_loss")
             return actor_loss
 
         # main training process
@@ -449,19 +437,19 @@ class SHAC(ActorCriticBase):
                 lr = self.actor_lr
 
             # train actor
-            self.time_report.start_timer("actor training")
+            self.timer.start("train/update_actor")
             self.actor_optim.step(actor_closure).detach().item()
-            self.time_report.end_timer("actor training")
+            self.timer.end("train/update_actor")
 
             # train critic
             # prepare dataset
-            self.time_report.start_timer("prepare critic dataset")
+            self.timer.start("train/make_critic_dataset")
             with torch.no_grad():
                 self.compute_target_values()
                 dataset = CriticDataset(self.batch_size, self.obs_buf, self.target_values, drop_last=False)
-            self.time_report.end_timer("prepare critic dataset")
+            self.timer.end("train/make_critic_dataset")
 
-            self.time_report.start_timer("critic training")
+            self.timer.start("train/update_critic")
             self.value_loss = 0.0
             for j in range(self.critic_iterations):
                 total_critic_loss = 0.0
@@ -487,7 +475,7 @@ class SHAC(ActorCriticBase):
                 self.value_loss = (total_critic_loss / batch_cnt).detach().cpu().item()
                 print('value iter {}/{}, loss = {:7.6f}'.format(j + 1, self.critic_iterations, self.value_loss), end='\r')
 
-            self.time_report.end_timer("critic training")
+            self.timer.end("train/update_critic")
 
             self.epoch += 1
 
@@ -552,9 +540,8 @@ class SHAC(ActorCriticBase):
                     param_targ.data.mul_(alpha)
                     param_targ.data.add_((1.0 - alpha) * param.data)
 
-        self.time_report.end_timer("algorithm")
-
-        self.time_report.report()
+        timings = self.timer.stats(step=self.agent_steps)
+        print(timings)
 
         self.save(os.path.join(self.ckpt_dir, 'final.pth'))
 
