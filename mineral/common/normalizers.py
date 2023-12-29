@@ -17,10 +17,20 @@ class Identity(nn.Module):
 
 
 class RunningMeanStd(nn.Module):
-    def __init__(self, shape, eps=1e-4, with_clamp=False, clamp_range=(-5.0, 5.0), initial_count='eps', dtype=torch.float32):
+    def __init__(
+        self,
+        shape,
+        eps=1e-4,
+        correction=1,
+        with_clamp=False,
+        clamp_range=(-5.0, 5.0),
+        initial_count='eps',
+        dtype=torch.float32,
+    ):
         super().__init__()
         self.shape = shape
         self.eps = eps
+        self.correction = correction
         self.with_clamp = with_clamp
         self.clamp_range = clamp_range
 
@@ -46,7 +56,7 @@ class RunningMeanStd(nn.Module):
 
     def update(self, x):
         batch_mean = x.mean(dim=0)
-        batch_var = x.var(dim=0)
+        batch_var = x.var(dim=0, correction=self.correction)
         batch_count = x.shape[0]
         self.running_mean, self.running_var, self.running_count = self._update_from_moments(
             self.running_mean, self.running_var, self.running_count, batch_mean, batch_var, batch_count
