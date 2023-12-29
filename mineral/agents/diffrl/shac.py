@@ -15,11 +15,12 @@ import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 
+from ...common import normalizers
 from ...common.reward_shaper import RewardShaper
 from ...common.timer import Timer
 from ..actorcritic_base import ActorCriticBase
 from . import models
-from .utils import AverageMeter, CriticDataset, RunningMeanStd, grad_norm
+from .utils import AverageMeter, CriticDataset, grad_norm
 
 
 class SHAC(ActorCriticBase):
@@ -48,13 +49,15 @@ class SHAC(ActorCriticBase):
         self.num_batch = self.shac_config.get('num_batch', 4)
         self.batch_size = self.num_envs * self.horizon_len // self.num_batch
 
+        rms_config = dict(eps=1e-5, correction=0, initial_count=1e-4, dtype=torch.float64)  # unbiased=False -> correction=0
+
         self.obs_rms = None
         if self.shac_config.normalize_input:
-            self.obs_rms = RunningMeanStd(shape=(self.num_obs), device=self.device)
+            self.obs_rms = normalizers.RunningMeanStd((self.num_obs,), **rms_config).to(self.device)
 
         self.ret_rms = None
         if self.shac_config.normalize_ret:
-            self.ret_rms = RunningMeanStd(shape=(), device=self.device)
+            self.ret_rms = normalizers.RunningMeanStd((), **rms_config).to(self.device)
 
         self._training = True
 
@@ -172,7 +175,7 @@ class SHAC(ActorCriticBase):
                 obs_rms = deepcopy(self.obs_rms)
 
             if self.ret_rms is not None:
-                ret_var = self.ret_rms.var.clone()
+                ret_var = self.ret_rms.running_var.clone()
 
         # initialize trajectory to cut off gradients between episodes.
         obs = self.env.initialize_trajectory()
