@@ -13,7 +13,6 @@ from copy import deepcopy
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.tensorboard import SummaryWriter
 
 from ...common import normalizers
 from ...common.reward_shaper import RewardShaper
@@ -51,8 +50,6 @@ class SHAC(ActorCriticBase):
 
         self._training = True
         if self._training:
-            os.makedirs(self.logdir, exist_ok=True)
-            self.writer = SummaryWriter(os.path.join(self.logdir, 'tb'))
             # save interval
             self.save_interval = self.shac_config.get("save_interval", 500)
             # stochastic inference
@@ -499,11 +496,12 @@ class SHAC(ActorCriticBase):
 
             # logging
             time_elapse = time.time() - self.start_time
-            self.writer.add_scalar('lr/iter', lr, self.epoch)
-            self.writer.add_scalar('actor_loss/step', self.actor_loss, self.agent_steps)
-            self.writer.add_scalar('actor_loss/iter', self.actor_loss, self.epoch)
-            self.writer.add_scalar('value_loss/step', self.value_loss, self.agent_steps)
-            self.writer.add_scalar('value_loss/iter', self.value_loss, self.epoch)
+            writer = self.tb_summary_writer
+            writer.add_scalar('lr/iter', lr, self.epoch)
+            writer.add_scalar('actor_loss/step', self.actor_loss, self.agent_steps)
+            writer.add_scalar('actor_loss/iter', self.actor_loss, self.epoch)
+            writer.add_scalar('value_loss/step', self.value_loss, self.agent_steps)
+            writer.add_scalar('value_loss/iter', self.value_loss, self.epoch)
             if len(self.episode_loss_his) > 0:
                 mean_episode_length = self.episode_length_meter.get_mean()
                 mean_policy_loss = self.episode_loss_meter.get_mean()
@@ -514,19 +512,19 @@ class SHAC(ActorCriticBase):
                     self.save(os.path.join(self.ckpt_dir, 'best.pth'))
                     self.best_policy_loss = mean_policy_loss
 
-                self.writer.add_scalar('policy_loss/step', mean_policy_loss, self.agent_steps)
-                self.writer.add_scalar('policy_loss/time', mean_policy_loss, time_elapse)
-                self.writer.add_scalar('policy_loss/iter', mean_policy_loss, self.epoch)
-                self.writer.add_scalar('rewards/step', -mean_policy_loss, self.agent_steps)
-                self.writer.add_scalar('rewards/time', -mean_policy_loss, time_elapse)
-                self.writer.add_scalar('rewards/iter', -mean_policy_loss, self.epoch)
-                self.writer.add_scalar('policy_discounted_loss/step', mean_policy_discounted_loss, self.agent_steps)
-                self.writer.add_scalar('policy_discounted_loss/iter', mean_policy_discounted_loss, self.epoch)
-                self.writer.add_scalar('best_policy_loss/step', self.best_policy_loss, self.agent_steps)
-                self.writer.add_scalar('best_policy_loss/iter', self.best_policy_loss, self.epoch)
-                self.writer.add_scalar('episode_lengths/step', mean_episode_length, self.agent_steps)
-                self.writer.add_scalar('episode_lengths/time', mean_episode_length, time_elapse)
-                self.writer.add_scalar('episode_lengths/iter', mean_episode_length, self.epoch)
+                writer.add_scalar('policy_loss/step', mean_policy_loss, self.agent_steps)
+                writer.add_scalar('policy_loss/time', mean_policy_loss, time_elapse)
+                writer.add_scalar('policy_loss/iter', mean_policy_loss, self.epoch)
+                writer.add_scalar('rewards/step', -mean_policy_loss, self.agent_steps)
+                writer.add_scalar('rewards/time', -mean_policy_loss, time_elapse)
+                writer.add_scalar('rewards/iter', -mean_policy_loss, self.epoch)
+                writer.add_scalar('policy_discounted_loss/step', mean_policy_discounted_loss, self.agent_steps)
+                writer.add_scalar('policy_discounted_loss/iter', mean_policy_discounted_loss, self.epoch)
+                writer.add_scalar('best_policy_loss/step', self.best_policy_loss, self.agent_steps)
+                writer.add_scalar('best_policy_loss/iter', self.best_policy_loss, self.epoch)
+                writer.add_scalar('episode_lengths/step', mean_episode_length, self.agent_steps)
+                writer.add_scalar('episode_lengths/time', mean_episode_length, time_elapse)
+                writer.add_scalar('episode_lengths/iter', mean_episode_length, self.epoch)
             else:
                 mean_policy_loss = np.inf
                 mean_policy_discounted_loss = np.inf
@@ -544,7 +542,7 @@ class SHAC(ActorCriticBase):
                 f'grad norm after clip {self.grad_norm_after_clip:.2f},',
             )
 
-            self.writer.flush()
+            writer.flush()
 
             if self.save_interval > 0 and (self.epoch % self.save_interval == 0):
                 self.save("policy_iter{}_reward{:.3f}".format(self.epoch, -mean_policy_loss))

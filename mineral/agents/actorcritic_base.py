@@ -62,6 +62,7 @@ class ActorCriticBase:
             WandbWriter(),
             TensorboardWriter(self.tb_dir, resolved_config),
         ]
+        self.tb_summary_writer = writers[1].writer
         self.writer = Writer(writers)
 
         self.print_every = full_cfg.agent.get('print_every', -1)
