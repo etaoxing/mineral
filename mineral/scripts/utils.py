@@ -68,6 +68,7 @@ def set_seed(seed, torch_deterministic=False, rank=0):
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
         torch.use_deterministic_algorithms(True)
+        # BUG: https://discuss.pytorch.org/t/deterministic-algorithms-yield-an-error/181809
     else:
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.deterministic = False

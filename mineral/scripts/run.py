@@ -1,6 +1,7 @@
 import os
 import pprint
 import sys
+import functools
 
 import hydra
 import wandb
@@ -45,12 +46,14 @@ def main(config: DictConfig):
     else:
         from .utils import set_np_formatting, set_seed
 
+    assert config.seed >= 0  # NOTE: seed = -1 unsupported
+    set_seed = functools.partial(set_seed, torch_deterministic=config.torch_deterministic)
+    # set numpy formatting for printing only
+    set_np_formatting()
+
     from .utils import limit_threads
 
     limit_threads(1)
-
-    # set numpy formatting for printing only
-    set_np_formatting()
 
     # --- Setup Run ---
     logdir = config.logdir

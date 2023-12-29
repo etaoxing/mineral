@@ -63,5 +63,5 @@ run: 'train'  # train | eval | train_eval
 ckpt: ''  # ckpt file to load
 ckpt_keys: ''  # set to '' to load all ckpt keys
 
-seed: 42  # set to -1 to choose random seed
+seed: 42
 torch_deterministic: False  # force the usage of deterministic algorithms in PyTorch
