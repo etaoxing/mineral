@@ -157,6 +157,9 @@ class SHAC(ActorCriticBase):
         self.mus = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
         self.sigmas = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
 
+    def clamp_actions(self, actions):
+        return torch.tanh(actions)
+
     def compute_actor_loss(self, deterministic=False):
         rew_acc = torch.zeros((self.horizon_len + 1, self.num_envs), dtype=torch.float32, device=self.device)
         gamma = torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
@@ -191,8 +194,9 @@ class SHAC(ActorCriticBase):
                     self.obs_buf[k][i] = v.clone()
 
             actions = self.actor(obs['obs'], deterministic=deterministic)
+            actions = self.clamp_actions(actions)
 
-            obs, rew, done, extra_info = self.env.step(torch.tanh(actions))
+            obs, rew, done, extra_info = self.env.step(actions)
             obs = self._convert_obs(obs)
 
             with torch.no_grad():
@@ -333,8 +337,9 @@ class SHAC(ActorCriticBase):
                 obs = {k: self.obs_rms[k].normalize(v) for k, v in obs.items()}
 
             actions = self.actor(obs['obs'], deterministic=deterministic)
+            actions = self.clamp_actions(actions)
 
-            obs, rew, done, _ = self.env.step(torch.tanh(actions))
+            obs, rew, done, _ = self.env.step(actions)
             obs = self._convert_obs(obs)
 
             episode_length += 1
