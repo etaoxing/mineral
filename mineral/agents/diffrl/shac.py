@@ -5,9 +5,9 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
+import collections
 import os
 import re
-import time
 from copy import deepcopy
 
 import numpy as np
@@ -128,8 +128,6 @@ class SHAC(ActorCriticBase):
         self.episode_loss_his = []
         self.episode_discounted_loss_his = []
         self.best_policy_loss = np.inf
-        self.actor_loss = np.inf
-        self.value_loss = np.inf
 
         # average meter
         self.episode_loss_meter = AverageMeter(1, 100).to(self.device)
@@ -386,6 +384,8 @@ class SHAC(ActorCriticBase):
         return critic_loss
 
     def update_actor(self):
+        results = collections.defaultdict(list)
+
         def actor_closure():
             self.actor_optim.zero_grad()
             self.timer.start("train/actor_closure/actor_loss")
@@ -399,33 +399,38 @@ class SHAC(ActorCriticBase):
             self.timer.end("train/actor_closure/backward_sim")
 
             with torch.no_grad():
-                self.grad_norm_before_clip = grad_norm(self.actor.parameters())
+                grad_norm_before_clip = grad_norm(self.actor.parameters())
                 if self.shac_config.truncate_grads:
                     nn.utils.clip_grad_norm_(self.actor.parameters(), self.shac_config.max_grad_norm)
-                self.grad_norm_after_clip = grad_norm(self.actor.parameters())
+                grad_norm_after_clip = grad_norm(self.actor.parameters())
 
                 # sanity check
-                if torch.isnan(self.grad_norm_before_clip) or self.grad_norm_before_clip > 1000000.0:
+                if torch.isnan(grad_norm_before_clip) or grad_norm_before_clip > 1000000.0:
                     print('NaN gradient')
                     raise ValueError
 
+            results["actor_loss"].append(actor_loss)
+            results["grad_norm_before_clip"].append(grad_norm_before_clip)
+            results["grad_norm_after_clip"].append(grad_norm_after_clip)
             self.timer.end("train/actor_closure/actor_loss")
             return actor_loss
 
-        self.actor_optim.step(actor_closure).detach().item()
+        self.actor_optim.step(actor_closure)
+        return results
 
     def update_critic(self, dataset):
-        self.value_loss = 0.0
+        results = collections.defaultdict(list)
         for j in range(self.critic_iterations):
             total_critic_loss = 0.0
-            batch_cnt = 0
-            for i in range(len(dataset)):
+            B = len(dataset)
+
+            for i in range(B):
                 batch_sample = dataset[i]
                 b_obs, b_target_values = batch_sample
 
                 self.critic_optim.zero_grad()
-                training_critic_loss = self.compute_critic_loss(b_obs, b_target_values)
-                training_critic_loss.backward()
+                critic_loss = self.compute_critic_loss(b_obs, b_target_values)
+                critic_loss.backward()
 
                 # ugly fix for simulation nan problem
                 for params in self.critic.parameters():
@@ -435,12 +440,12 @@ class SHAC(ActorCriticBase):
                     nn.utils.clip_grad_norm_(self.critic.parameters(), self.shac_config.max_grad_norm)
 
                 self.critic_optim.step()
+                total_critic_loss += critic_loss
+            value_loss = (total_critic_loss / B).detach()
+            results["value_loss"].append(value_loss)
 
-                total_critic_loss += training_critic_loss
-                batch_cnt += 1
-
-            self.value_loss = (total_critic_loss / batch_cnt).detach().cpu().item()
-            print('value iter {}/{}, loss = {:7.6f}'.format(j + 1, self.critic_iterations, self.value_loss), end='\r')
+            print(f'value iter {j+1}/{self.critic_iterations}, value_loss= {value_loss.item():7.6f}', end='\r')
+        return results
 
     def initialize_env(self):
         self.env.clear_grad()
@@ -458,8 +463,6 @@ class SHAC(ActorCriticBase):
         )
 
     def train(self):
-        self.start_time = time.time()
-
         # initializations
         self.initialize_env()
 
@@ -481,7 +484,7 @@ class SHAC(ActorCriticBase):
 
             # train actor
             self.timer.start("train/update_actor")
-            self.update_actor()
+            actor_results = self.update_actor()
             self.timer.end("train/update_actor")
 
             # train critic
@@ -493,7 +496,7 @@ class SHAC(ActorCriticBase):
             self.timer.end("train/make_critic_dataset")
 
             self.timer.start("train/update_critic")
-            self.update_critic(dataset)
+            critic_results = self.update_critic(dataset)
             self.timer.end("train/update_critic")
 
             # update target critic
@@ -503,16 +506,15 @@ class SHAC(ActorCriticBase):
                     param_targ.data.mul_(alpha)
                     param_targ.data.add_((1.0 - alpha) * param.data)
 
-            time_end_epoch = time.time()
+            results = {**actor_results, **critic_results}
+            metrics = {k: torch.mean(torch.stack(v)).item() for k, v in results.items()}
+            metrics = {"epoch": self.epoch, "lr": lr, **metrics}
+            metrics = {f"train_stats/{k}": v for k, v in metrics.items()}
 
-            # logging
-            time_elapse = time.time() - self.start_time
-            writer = self.tb_summary_writer
-            writer.add_scalar('lr/iter', lr, self.epoch)
-            writer.add_scalar('actor_loss/step', self.actor_loss, self.agent_steps)
-            writer.add_scalar('actor_loss/iter', self.actor_loss, self.epoch)
-            writer.add_scalar('value_loss/step', self.value_loss, self.agent_steps)
-            writer.add_scalar('value_loss/iter', self.value_loss, self.epoch)
+            timings_total_names = ("train/update_actor", "train/make_critic_dataset", "train/update_critic")
+            timings = self.timer.stats(step=self.agent_steps, total_names=timings_total_names, reset=False)
+            metrics = {**metrics, **{f"train_timings/{k}": v for k, v in timings.items()}}
+
             if len(self.episode_loss_his) > 0:
                 mean_episode_length = self.episode_length_meter.get_mean()
                 mean_policy_loss = self.episode_loss_meter.get_mean()
@@ -523,37 +525,31 @@ class SHAC(ActorCriticBase):
                     self.save(os.path.join(self.ckpt_dir, 'best.pth'))
                     self.best_policy_loss = mean_policy_loss
 
-                writer.add_scalar('policy_loss/step', mean_policy_loss, self.agent_steps)
-                writer.add_scalar('policy_loss/time', mean_policy_loss, time_elapse)
-                writer.add_scalar('policy_loss/iter', mean_policy_loss, self.epoch)
-                writer.add_scalar('rewards/step', -mean_policy_loss, self.agent_steps)
-                writer.add_scalar('rewards/time', -mean_policy_loss, time_elapse)
-                writer.add_scalar('rewards/iter', -mean_policy_loss, self.epoch)
-                writer.add_scalar('policy_discounted_loss/step', mean_policy_discounted_loss, self.agent_steps)
-                writer.add_scalar('policy_discounted_loss/iter', mean_policy_discounted_loss, self.epoch)
-                writer.add_scalar('best_policy_loss/step', self.best_policy_loss, self.agent_steps)
-                writer.add_scalar('best_policy_loss/iter', self.best_policy_loss, self.epoch)
-                writer.add_scalar('episode_lengths/step', mean_episode_length, self.agent_steps)
-                writer.add_scalar('episode_lengths/time', mean_episode_length, time_elapse)
-                writer.add_scalar('episode_lengths/iter', mean_episode_length, self.epoch)
+                episode_metrics = {
+                    "train_stats/policy_loss": mean_policy_loss,
+                    "train_stats/policy_discounted_loss": mean_policy_discounted_loss,
+                    "train_metrics/rewards": -mean_policy_loss,
+                    "train_metrics/episode_lengths": mean_episode_length,
+                }
+                metrics.update(episode_metrics)
             else:
                 mean_policy_loss = np.inf
                 mean_policy_discounted_loss = np.inf
                 mean_episode_length = 0
 
-            fps = self.horizon_len * self.num_envs / (time_end_epoch - time_start_epoch)
+            self.writer.add(self.agent_steps, metrics)
+            self.writer.write()
+
             print(
                 f'iter {self.epoch}:',
                 f'ep loss {mean_policy_loss:.2f},',
                 f'ep discounted loss {mean_policy_discounted_loss:.2f},',
                 f'ep len {mean_episode_length:.1f},',
-                f'fps total {fps:.2f},',
-                f'value loss {self.value_loss:.2f},',
-                f'grad norm before clip {self.grad_norm_before_clip:.2f},',
-                f'grad norm after clip {self.grad_norm_after_clip:.2f},',
+                f'fps total {timings["lastrate"]:.2f},',
+                f'value loss {metrics["train_stats/value_loss"]:.2f},',
+                f'grad norm before clip {metrics["train_stats/grad_norm_before_clip"]:.2f},',
+                f'grad norm after clip {metrics["train_stats/grad_norm_after_clip"]:.2f},',
             )
-
-            writer.flush()
 
             if self.save_interval > 0 and (self.epoch % self.save_interval == 0):
                 self.save("policy_iter{}_reward{:.3f}".format(self.epoch, -mean_policy_loss))
