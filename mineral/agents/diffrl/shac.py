@@ -159,8 +159,6 @@ class SHAC(ActorCriticBase):
         gamma = torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
         next_values = torch.zeros((self.horizon_len + 1, self.num_envs), dtype=torch.float32, device=self.device)
 
-        actor_loss = torch.tensor(0.0, dtype=torch.float32, device=self.device)
-
         with torch.no_grad():
             if self.obs_rms is not None:
                 obs_rms = deepcopy(self.obs_rms)
@@ -181,21 +179,22 @@ class SHAC(ActorCriticBase):
             # normalize the current obs
             obs = {k: obs_rms[k].normalize(v) for k, v in obs.items()}
 
+        actor_loss = torch.tensor(0.0, dtype=torch.float32, device=self.device)
         for i in range(self.horizon_len):
             # collect data for critic training
             with torch.no_grad():
                 for k, v in obs.items():
                     self.obs_buf[k][i] = v.clone()
 
+            # take env step
             actions = self.actor(obs['obs'], deterministic=deterministic)
             actions = self.clamp_actions(actions)
-
             obs, rew, done, extra_info = self.env.step(actions)
             obs = self._convert_obs(obs)
+            self.episode_length += 1
 
             with torch.no_grad():
                 raw_rew = rew.clone()
-
             # scale the reward
             rew = self.reward_shaper(rew)
 
@@ -215,12 +214,9 @@ class SHAC(ActorCriticBase):
                 # normalize the current rew
                 rew = rew / torch.sqrt(ret_var + 1e-6)
 
-            self.episode_length += 1
-
-            done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
-
+            # value bootstrap when episode terminates
             next_values[i + 1] = self.critic_target(obs['obs']).squeeze(-1)
-
+            done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
             if len(done_env_ids) > 0:
                 terminal_obs = extra_info['obs_before_reset']
                 terminal_obs = self._convert_obs(terminal_obs)
@@ -252,8 +248,8 @@ class SHAC(ActorCriticBase):
                 print('next value error')
                 raise ValueError
 
+            # compute actor loss
             rew_acc[i + 1, :] = rew_acc[i, :] + gamma * rew
-
             if i < self.horizon_len - 1:
                 a_loss = -rew_acc[i + 1, done_env_ids] - self.gamma * gamma[done_env_ids] * next_values[i + 1, done_env_ids]
                 actor_loss = actor_loss + a_loss.sum()
@@ -283,16 +279,17 @@ class SHAC(ActorCriticBase):
                 self.episode_loss -= raw_rew
                 self.episode_discounted_loss -= self.episode_gamma * raw_rew
                 self.episode_gamma *= self.gamma
+
                 if len(done_env_ids) > 0:
                     done_env_ids = done_env_ids.detach().cpu()
                     self.episode_loss_meter.update(self.episode_loss[done_env_ids])
                     self.episode_discounted_loss_meter.update(self.episode_discounted_loss[done_env_ids])
                     self.episode_length_meter.update(self.episode_length[done_env_ids])
+
                     for done_env_id in done_env_ids:
                         if self.episode_loss[done_env_id] > 1e6 or self.episode_loss[done_env_id] < -1e6:
                             print('ep loss error')
                             raise ValueError
-
                         self.episode_loss_his.append(self.episode_loss[done_env_id].item())
                         self.episode_discounted_loss_his.append(self.episode_discounted_loss[done_env_id].item())
                         self.episode_length_his.append(self.episode_length[done_env_id].item())
@@ -301,15 +298,12 @@ class SHAC(ActorCriticBase):
                         self.episode_length[done_env_id] = 0
                         self.episode_gamma[done_env_id] = 1.0
 
-        actor_loss /= self.horizon_len * self.num_envs
-
-        if self.ret_rms is not None:
-            actor_loss = actor_loss * torch.sqrt(ret_var + 1e-6)
-
-        self.actor_loss = actor_loss.detach().cpu().item()
-
         self.agent_steps += self.horizon_len * self.num_envs
 
+        actor_loss /= self.horizon_len * self.num_envs
+        if self.ret_rms is not None:
+            actor_loss = actor_loss * torch.sqrt(ret_var + 1e-6)
+        self.actor_loss = actor_loss.detach().cpu().item()
         return actor_loss
 
     @torch.no_grad()
