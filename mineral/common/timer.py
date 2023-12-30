@@ -80,4 +80,6 @@ class Timer:
             if step is not None:
                 self._step = step
             self.reset()
+        else:
+            self._totals.clear()
         return metrics
