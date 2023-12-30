@@ -119,10 +119,6 @@ class SHAC(ActorCriticBase):
 
         self.reward_shaper = RewardShaper(**self.shac_config.reward_shaper)
 
-        # counting variables
-        self.epoch = 0
-        self.agent_steps = 0
-
         # loss variables
         self.episode_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
         self.episode_discounted_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
@@ -468,16 +464,16 @@ class SHAC(ActorCriticBase):
         self.initialize_env()
 
         # main training process
-        for epoch in range(self.max_epochs):
-            time_start_epoch = time.time()
+        while self.epoch < self.max_epochs:
+            self.epoch += 1
 
             # learning rate schedule
             if self.shac_config.lr_schedule == 'linear':
-                actor_lr = (1e-5 - self.actor_lr) * float(epoch / self.max_epochs) + self.actor_lr
+                actor_lr = (1e-5 - self.actor_lr) * float(self.epoch / self.max_epochs) + self.actor_lr
                 for param_group in self.actor_optim.param_groups:
                     param_group['lr'] = actor_lr
                 lr = actor_lr
-                critic_lr = (1e-5 - self.critic_lr) * float(epoch / self.max_epochs) + self.critic_lr
+                critic_lr = (1e-5 - self.critic_lr) * float(self.epoch / self.max_epochs) + self.critic_lr
                 for param_group in self.critic_optim.param_groups:
                     param_group['lr'] = critic_lr
             else:
@@ -506,8 +502,6 @@ class SHAC(ActorCriticBase):
                 for param, param_targ in zip(self.critic.parameters(), self.critic_target.parameters()):
                     param_targ.data.mul_(alpha)
                     param_targ.data.add_((1.0 - alpha) * param.data)
-
-            self.epoch += 1
 
             time_end_epoch = time.time()
 
