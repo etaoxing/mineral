@@ -266,11 +266,6 @@ class SHAC(ActorCriticBase):
                 mean_policy_loss = self.episode_loss_meter.get_mean()
                 mean_policy_discounted_loss = self.episode_discounted_loss_meter.get_mean()
 
-                if mean_policy_loss < self.best_policy_loss:
-                    print("save best policy with loss {:.2f}".format(mean_policy_loss))
-                    self.save(os.path.join(self.ckpt_dir, 'best.pth'))
-                    self.best_policy_loss = mean_policy_loss
-
                 episode_metrics = {
                     "train_stats/policy_loss": mean_policy_loss,
                     "train_stats/policy_discounted_loss": mean_policy_discounted_loss,
@@ -286,6 +281,8 @@ class SHAC(ActorCriticBase):
             self.writer.add(self.agent_steps, metrics)
             self.writer.write()
 
+            self._checkpoint_save(-mean_policy_loss)
+
             print(
                 f'iter {self.epoch}:',
                 f'ep loss {mean_policy_loss:.2f},',
@@ -296,9 +293,6 @@ class SHAC(ActorCriticBase):
                 f'grad norm before clip {metrics["train_stats/grad_norm_before_clip"]:.2f},',
                 f'grad norm after clip {metrics["train_stats/grad_norm_after_clip"]:.2f},',
             )
-
-            if self.save_interval > 0 and (self.epoch % self.save_interval == 0):
-                self.save("policy_iter{}_reward{:.3f}".format(self.epoch, -mean_policy_loss))
 
         timings = self.timer.stats(step=self.agent_steps)
         print(timings)
