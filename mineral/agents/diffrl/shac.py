@@ -307,9 +307,6 @@ class SHAC(ActorCriticBase):
         np.save(open(os.path.join(self.logdir, 'episode_discounted_loss_his.npy'), 'wb'), self.episode_discounted_loss_his)
         np.save(open(os.path.join(self.logdir, 'episode_length_his.npy'), 'wb'), self.episode_length_his)
 
-        # evaluate the final policy's performance
-        self.run(self.num_envs)
-
     def update_actor(self):
         results = collections.defaultdict(list)
 
@@ -370,6 +367,7 @@ class SHAC(ActorCriticBase):
             # normalize the current obs
             obs = {k: obs_rms[k].normalize(v) for k, v in obs.items()}
 
+        # collect trajectories and compute actor loss
         actor_loss = torch.tensor(0.0, dtype=torch.float32, device=self.device)
         for i in range(self.horizon_len):
             # collect data for critic training
@@ -547,8 +545,8 @@ class SHAC(ActorCriticBase):
         else:
             raise NotImplementedError(self.critic_method)
 
-    @torch.no_grad()
-    def run(self, num_games):
+    def eval(self):
+        num_games = self.num_actors
         mean_policy_loss, mean_policy_discounted_loss, mean_episode_length = self.evaluate_policy(
             num_games=num_games, deterministic=not self.stochastic_evaluation
         )
@@ -558,8 +556,13 @@ class SHAC(ActorCriticBase):
             f'mean episode length = {mean_episode_length}',
         )
 
+    def set_train(self):
+        pass
+
+    def set_eval(self):
+        pass
+
     def save(self, f):
-        return
         ckpt = {
             'actor': self.actor.state_dict(),
             'critic': self.critic.state_dict(),
@@ -570,7 +573,6 @@ class SHAC(ActorCriticBase):
         torch.save(ckpt, f)
 
     def load(self, f, ckpt_keys=''):
-        return
         ckpt = torch.load(f, map_location=self.device)
         all_ckpt_keys = ('actor', 'critic', 'critic_target', 'obs_rms', 'ret_rms')
         for k in all_ckpt_keys:
