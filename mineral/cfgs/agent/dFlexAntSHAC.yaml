@@ -3,14 +3,18 @@ algo: SHAC
 
 network:
   encoder: null
-  actor: ActorStochasticMLP
+  actor: Actor
   actor_kwargs:
-    hidden_dims: [128, 64, 32]
-    activation: elu
-  critic: CriticMLP
+    mlp_kwargs:
+      units: [128, 64, 32]
+      act_type: ELU
+      norm_type: LayerNorm
+  critic: Critic
   critic_kwargs:
-    hidden_dims: [64, 64]
-    activation: elu
+    mlp_kwargs:
+      units: [64, 64]
+      act_type: ELU
+      norm_type: LayerNorm
 
 shac:
   multi_gpu: ${...multi_gpu}

@@ -1,115 +1,85 @@
-import numpy as np
 import torch
 import torch.nn as nn
-from torch.distributions.normal import Normal
+
+from ...nets import MLP, Dist
 
 
-def model_utils_init(module, weight_init, bias_init, gain=1):
-    weight_init(module.weight.data, gain=gain)
-    bias_init(module.bias.data)
-    return module
+def weight_init_orthogonal_(m):
+    if isinstance(m, nn.Linear):
+        nn.init.orthogonal_(m.weight.data, gain=1.4142135623730951)  # sqrt(2)
+        if hasattr(m.bias, 'data'):
+            nn.init.constant_(m.bias.data, 0.0)
 
 
-def model_utils_get_activation_func(activation_name):
-    if activation_name.lower() == 'tanh':
-        return nn.Tanh()
-    elif activation_name.lower() == 'relu':
-        return nn.ReLU()
-    elif activation_name.lower() == 'elu':
-        return nn.ELU()
-    elif activation_name.lower() == 'identity':
-        return nn.Identity()
+def weight_init_(module, weight_init):
+    if weight_init == None:
+        pass
+    elif weight_init == "orthogonal":
+        module.apply(weight_init_orthogonal_)
     else:
-        raise NotImplementedError('Actication func {} not defined'.format(activation_name))
+        raise NotImplementedError(weight_init)
 
 
-class ActorStochasticMLP(nn.Module):
-    def __init__(self, obs_dim, action_dim, hidden_dims, activation, logstd=-1.0, device='cuda:0'):
-        super(ActorStochasticMLP, self).__init__()
+class Actor(nn.Module):
+    def __init__(
+        self,
+        state_dim,
+        action_dim,
+        fixed_sigma=True,
+        init_sigma=-1.0,
+        mlp_kwargs=dict(act_type="ELU", norm_type="LayerNorm"),
+        dist_kwargs=dict(dist="normal"),
+        weight_init="orthogonal",
+    ):
+        super().__init__()
+        self.fixed_sigma = fixed_sigma
+        self.init_sigma = init_sigma
 
-        self.device = device
-
-        self.layer_dims = [obs_dim] + hidden_dims + [action_dim]
-
-        init_ = lambda m: model_utils_init(m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0), np.sqrt(2))
-
-        modules = []
-        for i in range(len(self.layer_dims) - 1):
-            modules.append(nn.Linear(self.layer_dims[i], self.layer_dims[i + 1]))
-            if i < len(self.layer_dims) - 2:
-                modules.append(model_utils_get_activation_func(activation))
-                modules.append(torch.nn.LayerNorm(self.layer_dims[i + 1]))
-            else:
-                modules.append(model_utils_get_activation_func('identity'))
-
-        self.mu_net = nn.Sequential(*modules).to(device)
-
-        self.logstd = torch.nn.Parameter(torch.ones(action_dim, dtype=torch.float32, device=device) * logstd)
-
-        self.action_dim = action_dim
-        self.obs_dim = obs_dim
-
-        print(self.mu_net)
-        print(self.logstd)
-
-    def get_logstd(self):
-        return self.logstd
-
-    def forward(self, obs, deterministic=False):
-        mu = self.mu_net(obs)
-
-        if deterministic:
-            return mu
+        self.actor_mlp = MLP(state_dim, **mlp_kwargs)
+        self.mu = nn.Linear(self.actor_mlp.out_dim, action_dim)
+        if self.fixed_sigma:
+            self.sigma = nn.Parameter(torch.ones(action_dim, dtype=torch.float32), requires_grad=True)
         else:
-            std = self.logstd.exp()  # (num_actions)
-            # eps = torch.randn((*obs.shape[:-1], std.shape[-1])).to(self.device)
-            # sample = mu + eps * std
-            dist = Normal(mu, std)
-            sample = dist.rsample()
-            return sample
+            self.sigma = nn.Linear(self.actor_mlp.out_dim, action_dim)
+        self.dist = Dist(**dist_kwargs)
 
-    def forward_with_dist(self, obs, deterministic=False):
-        mu = self.mu_net(obs)
-        std = self.logstd.exp()  # (num_actions)
+        self.weight_init = weight_init
+        self.reset_parameters()
 
-        if deterministic:
-            return mu, mu, std
+    def reset_parameters(self):
+        weight_init_(self, self.weight_init)
+
+        if self.fixed_sigma:
+            nn.init.constant_(self.sigma, self.init_sigma)
+
+    def forward(self, x):
+        x = self.actor_mlp(x)
+        mu = self.mu(x)
+        if self.fixed_sigma:
+            sigma = self.sigma
         else:
-            dist = Normal(mu, std)
-            sample = dist.rsample()
-            return sample, mu, std
-
-    def evaluate_actions_log_probs(self, obs, actions):
-        mu = self.mu_net(obs)
-
-        std = self.logstd.exp()
-        dist = Normal(mu, std)
-
-        return dist.log_prob(actions)
+            sigma = self.sigma(x)
+        mu, sigma, distr = self.dist(mu, sigma)
+        return mu, sigma, distr
 
 
-class CriticMLP(nn.Module):
-    def __init__(self, obs_dim, action_dim, hidden_dims, activation, device='cuda:0'):
-        super(CriticMLP, self).__init__()
+class Critic(nn.Module):
+    def __init__(
+        self,
+        state_dim,
+        action_dim,
+        mlp_kwargs=dict(act_type="ELU", norm_type="LayerNorm"),
+        weight_init="orthogonal",
+    ):
+        super().__init__()
+        self.critic_mlp = MLP(state_dim, out_dim=1, plain_last=True, **mlp_kwargs)
 
-        self.device = device
+        self.weight_init = weight_init
+        self.reset_parameters()
 
-        self.layer_dims = [obs_dim] + hidden_dims + [1]
+    def reset_parameters(self):
+        weight_init_(self, self.weight_init)
 
-        init_ = lambda m: model_utils_init(m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0), np.sqrt(2))
-
-        modules = []
-        for i in range(len(self.layer_dims) - 1):
-            modules.append(init_(nn.Linear(self.layer_dims[i], self.layer_dims[i + 1])))
-            if i < len(self.layer_dims) - 2:
-                modules.append(model_utils_get_activation_func(activation))
-                modules.append(torch.nn.LayerNorm(self.layer_dims[i + 1]))
-
-        self.critic = nn.Sequential(*modules).to(device)
-
-        self.obs_dim = obs_dim
-
-        print(self.critic)
-
-    def forward(self, observations):
-        return self.critic(observations)
+    def forward(self, x):
+        x = self.critic_mlp(x)
+        return x

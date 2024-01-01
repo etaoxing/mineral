@@ -151,8 +151,13 @@ class SHAC(ActorCriticBase):
         self.mus = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
         self.sigmas = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
 
-    def get_actions(self, obs, sample: bool = True):
-        actions = self.actor(obs['obs'], deterministic=not sample)
+    def get_actions(self, obs, sample=True):
+        obs = obs['obs']
+        mu, sigma, distr = self.actor(obs)
+        if sample:
+            actions = distr.rsample()
+        else:
+            actions = mu
         # clamp actions
         actions = torch.tanh(actions)
         return actions
