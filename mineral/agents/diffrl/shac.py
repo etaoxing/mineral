@@ -496,7 +496,6 @@ class SHAC(ActorCriticBase):
         actor_loss /= self.horizon_len * self.num_envs
         if self.ret_rms is not None:
             actor_loss = actor_loss * torch.sqrt(ret_var + 1e-6)
-        self.actor_loss = actor_loss.detach().cpu().item()
         return actor_loss
 
     def update_critic(self, dataset):
