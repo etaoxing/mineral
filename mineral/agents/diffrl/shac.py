@@ -289,14 +289,18 @@ class SHAC(ActorCriticBase):
             self._checkpoint_save(-mean_policy_loss)
 
             print(
-                f'iter {self.epoch}:',
-                f'ep loss {mean_policy_loss:.2f},',
-                f'ep discounted loss {mean_policy_discounted_loss:.2f},',
-                f'ep len {mean_episode_length:.1f},',
-                f'fps total {timings["lastrate"]:.2f},',
-                f'value loss {metrics["train_stats/value_loss"]:.2f},',
-                f'grad norm before clip {metrics["train_stats/grad_norm_before_clip"]:.2f},',
-                f'grad norm after clip {metrics["train_stats/grad_norm_after_clip"]:.2f},',
+                f'Epoch: {self.epoch} |',
+                f'Agent Steps: {int(self.agent_steps):,} |',
+                f'SPS: {timings["lastrate"]:.2f} |',
+                f'Best: {self.best_stat if self.best_stat is not None else -float("inf"):.2f} |',
+                f'Stats: (',
+                f'ep_loss {mean_policy_loss:.2f},',
+                f'ep_discounted_loss {mean_policy_discounted_loss:.2f},',
+                f'ep_len {mean_episode_length:.2f},',
+                f'value_loss {metrics["train_stats/value_loss"]:.2f},',
+                f'grad_norm_before_clip {metrics["train_stats/grad_norm_before_clip"]:.2f},',
+                f'grad_norm_after_clip {metrics["train_stats/grad_norm_after_clip"]:.2f},',
+                f'\b\b )',
             )
 
         timings = self.timer.stats(step=self.agent_steps)
