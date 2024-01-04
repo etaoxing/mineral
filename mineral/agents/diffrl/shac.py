@@ -151,6 +151,7 @@ class SHAC(ActorCriticBase):
         self.sigmas = torch.zeros((T, B, self.num_actions), dtype=torch.float32, device=self.device)
 
     def get_actions(self, obs, sample=True):
+        # NOTE: obs_rms.normalize(...) occurs elsewhere
         obs = obs['obs']
         mu, sigma, distr = self.actor(obs)
         if sample:
@@ -215,7 +216,6 @@ class SHAC(ActorCriticBase):
         # initializations
         self.initialize_env()
 
-        # main training process
         while self.epoch < self.max_epochs:
             self.epoch += 1
 
@@ -255,6 +255,7 @@ class SHAC(ActorCriticBase):
                     param_targ.data.mul_(alpha)
                     param_targ.data.add_((1.0 - alpha) * param.data)
 
+            # gather metrics
             results = {**actor_results, **critic_results}
             metrics = {k: torch.mean(torch.stack(v)).item() for k, v in results.items()}
             metrics = {"epoch": self.epoch, "lr": lr, **metrics}
@@ -290,14 +291,14 @@ class SHAC(ActorCriticBase):
                 f'Agent Steps: {int(self.agent_steps):,} |',
                 f'SPS: {timings["lastrate"]:.2f} |',
                 f'Best: {self.best_stat if self.best_stat is not None else -float("inf"):.2f} |',
-                f'Stats: (',
+                f'Stats:',
                 f'ep_rewards {mean_episode_rewards:.2f},',
                 f'ep_lenths {mean_episode_lengths:.2f},',
                 f'ep_discounted_rewards {mean_episode_discounted_rewards:.2f},',
-                f'value_loss {metrics["train_stats/value_loss"]:.2f},',
+                f'value_loss {metrics["train_stats/value_loss"]:.4f},',
                 f'grad_norm_before_clip {metrics["train_stats/grad_norm_before_clip"]:.2f},',
                 f'grad_norm_after_clip {metrics["train_stats/grad_norm_after_clip"]:.2f},',
-                f'\b\b )',
+                f'\b\b |',
             )
 
         timings = self.timer.stats(step=self.agent_steps)
@@ -527,7 +528,8 @@ class SHAC(ActorCriticBase):
             value_loss = (total_critic_loss / B).detach()
             results["value_loss"].append(value_loss)
 
-            print(f'value iter {j+1}/{self.critic_iterations}, value_loss= {value_loss.item():7.6f}', end='\r')
+        #     print(f'value iter {j+1}/{self.critic_iterations}, value_loss= {value_loss.item():7.6f}', end='\r')
+        # print()
         return results
 
     def compute_critic_loss(self, obs, target_values):
