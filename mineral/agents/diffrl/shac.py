@@ -217,8 +217,10 @@ class SHAC(ActorCriticBase):
                 critic_lr = (1e-5 - self.critic_lr) * float(self.epoch / self.max_epochs) + self.critic_lr
                 for param_group in self.critic_optim.param_groups:
                     param_group['lr'] = critic_lr
-            else:
+            elif self.shac_config.lr_schedule == 'constant':
                 lr = self.actor_lr
+            else:
+                raise NotImplementedError(self.shac_config.lr_schedule)
 
             # train actor
             self.timer.start("train/update_actor")
