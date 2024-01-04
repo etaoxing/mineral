@@ -17,9 +17,10 @@ import torch.nn as nn
 from ...common import normalizers
 from ...common.reward_shaper import RewardShaper
 from ...common.timer import Timer
+from ...common.tracker import Tracker
 from ..actorcritic_base import ActorCriticBase
 from . import models
-from .utils import AverageMeter, CriticDataset, grad_norm
+from .utils import CriticDataset, grad_norm
 
 
 class SHAC(ActorCriticBase):
@@ -129,9 +130,10 @@ class SHAC(ActorCriticBase):
         self.episode_lengths_hist = []
         self.episode_discounted_rewards_hist = []
 
-        self.episode_rewards_meter = AverageMeter(1, 100).to(self.device)
-        self.episode_lengths_meter = AverageMeter(1, 100).to(self.device)
-        self.episode_discounted_rewards_meter = AverageMeter(1, 100).to(self.device)
+        tracker_len = 100
+        self.episode_rewards_tracker = Tracker(tracker_len)
+        self.episode_lengths_tracker = Tracker(tracker_len)
+        self.episode_discounted_rewards_tracker = Tracker(tracker_len)
 
         # --- Timing ---
         self.timer = Timer()
@@ -266,9 +268,9 @@ class SHAC(ActorCriticBase):
             metrics = {**metrics, **{f"train_timings/{k}": v for k, v in timings.items()}}
 
             if len(self.episode_rewards_hist) > 0:
-                mean_episode_rewards = self.episode_rewards_meter.get_mean()
-                mean_episode_lengths = self.episode_lengths_meter.get_mean()
-                mean_episode_discounted_rewards = self.episode_discounted_rewards_meter.get_mean()
+                mean_episode_rewards = self.episode_rewards_tracker.mean()
+                mean_episode_lengths = self.episode_lengths_tracker.mean()
+                mean_episode_discounted_rewards = self.episode_discounted_rewards_tracker.mean()
 
                 episode_metrics = {
                     "train_metrics/episode_rewards": mean_episode_rewards,
@@ -479,9 +481,9 @@ class SHAC(ActorCriticBase):
             with torch.no_grad():
                 if len(done_env_ids) > 0:
                     done_env_ids = done_env_ids.detach().cpu()
-                    self.episode_rewards_meter.update(self.episode_rewards[done_env_ids])
-                    self.episode_lengths_meter.update(self.episode_lengths[done_env_ids])
-                    self.episode_discounted_rewards_meter.update(self.episode_discounted_rewards[done_env_ids])
+                    self.episode_rewards_tracker.update(self.episode_rewards[done_env_ids])
+                    self.episode_lengths_tracker.update(self.episode_lengths[done_env_ids])
+                    self.episode_discounted_rewards_tracker.update(self.episode_discounted_rewards[done_env_ids])
 
                     for done_env_id in done_env_ids:
                         if self.episode_rewards[done_env_id] > 1e6 or self.episode_rewards[done_env_id] < -1e6:

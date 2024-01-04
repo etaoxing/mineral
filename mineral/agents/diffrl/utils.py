@@ -14,35 +14,6 @@ def grad_norm(params):
     return torch.sqrt(grad_norm)
 
 
-class AverageMeter(nn.Module):
-    def __init__(self, in_shape, max_size):
-        super(AverageMeter, self).__init__()
-        self.max_size = max_size
-        self.current_size = 0
-        self.register_buffer("mean", torch.zeros(in_shape, dtype=torch.float32))
-
-    def update(self, values):
-        size = values.size()[0]
-        if size == 0:
-            return
-        new_mean = torch.mean(values.float(), dim=0)
-        size = np.clip(size, 0, self.max_size)
-        old_size = min(self.max_size - size, self.current_size)
-        size_sum = old_size + size
-        self.current_size = size_sum
-        self.mean = (self.mean * old_size + new_mean * size) / size_sum
-
-    def clear(self):
-        self.current_size = 0
-        self.mean.fill_(0)
-
-    def __len__(self):
-        return self.current_size
-
-    def get_mean(self):
-        return self.mean.squeeze(0).cpu().numpy()
-
-
 class CriticDataset:
     def __init__(self, batch_size, obs, target_values, shuffle=False, drop_last=False):
         self.obs = {k: v.view(-1, v.shape[-1]) for k, v in obs.items()}
