@@ -49,19 +49,6 @@ class SHAC(ActorCriticBase):
         self.num_batch = self.shac_config.get('num_batch', 4)
         self.batch_size = self.num_envs * self.horizon_len // self.num_batch
 
-        self._training = True
-        if self._training:
-            # save interval
-            self.save_interval = self.shac_config.get("save_interval", 500)
-            # stochastic inference
-            self.stochastic_evaluation = True
-        else:
-            self.stochastic_evaluation = not (
-                self.shac_config['player'].get('determenistic', False)
-                or self.shac_config['player'].get('deterministic', False)
-            )
-            self.horizon_len = self.env.episode_length
-
         # --- Normalizers ---
         rms_config = dict(eps=1e-5, correction=0, initial_count=1e-4, dtype=torch.float64)  # unbiased=False -> correction=0
         if self.shac_config.normalize_input:
@@ -559,7 +546,7 @@ class SHAC(ActorCriticBase):
     def eval(self):
         num_games = self.num_actors
         mean_episode_rewards, mean_episode_lengths, mean_episode_discounted_rewards = self.evaluate_policy(
-            num_games=num_games, deterministic=not self.stochastic_evaluation
+            num_games=num_games, deterministic=True,
         )
         print(
             f'mean ep_rewards = {mean_episode_rewards},',
