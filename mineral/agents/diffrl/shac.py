@@ -119,20 +119,19 @@ class SHAC(ActorCriticBase):
 
         self.reward_shaper = RewardShaper(**self.shac_config.reward_shaper)
 
-        # loss variables
-        self.episode_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
-        self.episode_discounted_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
-        self.episode_length = torch.zeros(self.num_envs, dtype=int)
+        # --- Episode Metrics ---
+        self.episode_rewards = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        self.episode_lengths = torch.zeros(self.num_envs, dtype=int)
+        self.episode_discounted_rewards = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
         self.episode_gamma = torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
-        self.episode_length_his = []
-        self.episode_loss_his = []
-        self.episode_discounted_loss_his = []
-        self.best_policy_loss = np.inf
 
-        # average meter
-        self.episode_loss_meter = AverageMeter(1, 100).to(self.device)
-        self.episode_discounted_loss_meter = AverageMeter(1, 100).to(self.device)
-        self.episode_length_meter = AverageMeter(1, 100).to(self.device)
+        self.episode_rewards_hist = []
+        self.episode_lengths_hist = []
+        self.episode_discounted_rewards_hist = []
+
+        self.episode_rewards_meter = AverageMeter(1, 100).to(self.device)
+        self.episode_lengths_meter = AverageMeter(1, 100).to(self.device)
+        self.episode_discounted_rewards_meter = AverageMeter(1, 100).to(self.device)
 
         # --- Timing ---
         self.timer = Timer()
@@ -164,13 +163,13 @@ class SHAC(ActorCriticBase):
 
     @torch.no_grad()
     def evaluate_policy(self, num_games, deterministic=False):
-        episode_length_his = []
-        episode_loss_his = []
-        episode_discounted_loss_his = []
-        episode_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
-        episode_length = torch.zeros(self.num_envs, dtype=int)
+        episode_rewards_hist = []
+        episode_lengths_hist = []
+        episode_discounted_rewards_hist = []
+        episode_rewards = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        episode_lengths = torch.zeros(self.num_envs, dtype=int)
+        episode_discounted_rewards = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
         episode_gamma = torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
-        episode_discounted_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
 
         obs = self.env.reset()
         obs = self._convert_obs(obs)
@@ -184,30 +183,29 @@ class SHAC(ActorCriticBase):
             obs, rew, done, _ = self.env.step(actions)
             obs = self._convert_obs(obs)
 
-            episode_length += 1
+            episode_rewards += rew
+            episode_lengths += 1
+            episode_discounted_rewards += episode_gamma * rew
+            episode_gamma *= self.gamma
 
             done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
-
-            episode_loss -= rew
-            episode_discounted_loss -= episode_gamma * rew
-            episode_gamma *= self.gamma
             if len(done_env_ids) > 0:
                 for done_env_id in done_env_ids:
-                    print('loss = {:.2f}, len = {}'.format(episode_loss[done_env_id].item(), episode_length[done_env_id]))
-                    episode_loss_his.append(episode_loss[done_env_id].item())
-                    episode_discounted_loss_his.append(episode_discounted_loss[done_env_id].item())
-                    episode_length_his.append(episode_length[done_env_id].item())
-                    episode_loss[done_env_id] = 0.0
-                    episode_discounted_loss[done_env_id] = 0.0
-                    episode_length[done_env_id] = 0
+                    print('rew = {:.2f}, len = {}'.format(episode_rewards[done_env_id].item(), episode_lengths[done_env_id]))
+                    episode_rewards_hist.append(episode_rewards[done_env_id].item())
+                    episode_lengths_hist.append(episode_lengths[done_env_id].item())
+                    episode_discounted_rewards_hist.append(episode_discounted_rewards[done_env_id].item())
+                    episode_rewards[done_env_id] = 0.0
+                    episode_lengths[done_env_id] = 0
+                    episode_discounted_rewards[done_env_id] = 0.0
                     episode_gamma[done_env_id] = 1.0
                     games_cnt += 1
 
-        mean_episode_length = np.mean(np.array(episode_length_his))
-        mean_policy_loss = np.mean(np.array(episode_loss_his))
-        mean_policy_discounted_loss = np.mean(np.array(episode_discounted_loss_his))
+        mean_episode_rewards = np.mean(np.array(episode_rewards_hist))
+        mean_episode_lengths = np.mean(np.array(episode_lengths_hist))
+        mean_episode_discounted_rewards = np.mean(np.array(episode_discounted_rewards_hist))
 
-        return mean_policy_loss, mean_policy_discounted_loss, mean_episode_length
+        return mean_episode_rewards, mean_episode_lengths, mean_episode_discounted_rewards
 
     def initialize_env(self):
         self.env.clear_grad()
@@ -266,27 +264,26 @@ class SHAC(ActorCriticBase):
             timings = self.timer.stats(step=self.agent_steps, total_names=timings_total_names, reset=False)
             metrics = {**metrics, **{f"train_timings/{k}": v for k, v in timings.items()}}
 
-            if len(self.episode_loss_his) > 0:
-                mean_episode_length = self.episode_length_meter.get_mean()
-                mean_policy_loss = self.episode_loss_meter.get_mean()
-                mean_policy_discounted_loss = self.episode_discounted_loss_meter.get_mean()
+            if len(self.episode_rewards_hist) > 0:
+                mean_episode_rewards = self.episode_rewards_meter.get_mean()
+                mean_episode_lengths = self.episode_lengths_meter.get_mean()
+                mean_episode_discounted_rewards = self.episode_discounted_rewards_meter.get_mean()
 
                 episode_metrics = {
-                    "train_stats/policy_loss": mean_policy_loss,
-                    "train_stats/policy_discounted_loss": mean_policy_discounted_loss,
-                    "train_metrics/rewards": -mean_policy_loss,
-                    "train_metrics/episode_lengths": mean_episode_length,
+                    "train_metrics/episode_rewards": mean_episode_rewards,
+                    "train_metrics/episode_lengths": mean_episode_lengths,
+                    "train_metrics/episode_discounted_rewards": mean_episode_discounted_rewards,
                 }
                 metrics.update(episode_metrics)
             else:
-                mean_policy_loss = np.inf
-                mean_policy_discounted_loss = np.inf
-                mean_episode_length = 0
+                mean_episode_rewards = -np.inf
+                mean_episode_lengths = 0
+                mean_episode_discounted_rewards = -np.inf
 
             self.writer.add(self.agent_steps, metrics)
             self.writer.write()
 
-            self._checkpoint_save(-mean_policy_loss)
+            self._checkpoint_save(mean_episode_rewards)
 
             print(
                 f'Epoch: {self.epoch} |',
@@ -294,9 +291,9 @@ class SHAC(ActorCriticBase):
                 f'SPS: {timings["lastrate"]:.2f} |',
                 f'Best: {self.best_stat if self.best_stat is not None else -float("inf"):.2f} |',
                 f'Stats: (',
-                f'ep_loss {mean_policy_loss:.2f},',
-                f'ep_discounted_loss {mean_policy_discounted_loss:.2f},',
-                f'ep_len {mean_episode_length:.2f},',
+                f'ep_rewards {mean_episode_rewards:.2f},',
+                f'ep_lenths {mean_episode_lengths:.2f},',
+                f'ep_discounted_rewards {mean_episode_discounted_rewards:.2f},',
                 f'value_loss {metrics["train_stats/value_loss"]:.2f},',
                 f'grad_norm_before_clip {metrics["train_stats/grad_norm_before_clip"]:.2f},',
                 f'grad_norm_after_clip {metrics["train_stats/grad_norm_after_clip"]:.2f},',
@@ -309,12 +306,12 @@ class SHAC(ActorCriticBase):
         self.save(os.path.join(self.ckpt_dir, 'final.pth'))
 
         # save reward/length history
-        self.episode_loss_his = np.array(self.episode_loss_his)
-        self.episode_discounted_loss_his = np.array(self.episode_discounted_loss_his)
-        self.episode_length_his = np.array(self.episode_length_his)
-        np.save(open(os.path.join(self.logdir, 'episode_loss_his.npy'), 'wb'), self.episode_loss_his)
-        np.save(open(os.path.join(self.logdir, 'episode_discounted_loss_his.npy'), 'wb'), self.episode_discounted_loss_his)
-        np.save(open(os.path.join(self.logdir, 'episode_length_his.npy'), 'wb'), self.episode_length_his)
+        self.episode_rewards_hist = np.array(self.episode_rewards_his)
+        self.episode_lengths_hist = np.array(self.episode_lengths_hist)
+        self.episode_discounted_rewards_hist = np.array(self.episode_discounted_rewards_hist)
+        np.save(open(os.path.join(self.logdir, 'ep_rewards_hist.npy'), 'wb'), self.episode_rewards_hist)
+        np.save(open(os.path.join(self.logdir, 'ep_lengths_hist.npy'), 'wb'), self.episode_lengths_hist)
+        np.save(open(os.path.join(self.logdir, 'ep_discounted_rewards_hist.npy'), 'wb'), self.episode_discounted_rewards_hist)
 
     def update_actor(self):
         results = collections.defaultdict(list)
@@ -388,7 +385,7 @@ class SHAC(ActorCriticBase):
             actions = self.get_actions(obs, sample=not deterministic)
             obs, rew, done, extra_info = self.env.step(actions)
             obs = self._convert_obs(obs)
-            self.episode_length += 1
+            self.episode_lengths += 1
 
             with torch.no_grad():
                 raw_rew = rew.clone()
@@ -433,7 +430,7 @@ class SHAC(ActorCriticBase):
 
                     if nan:
                         next_values[i + 1, id] = 0.0
-                    elif self.episode_length[id] < self.max_episode_length:  # early termination
+                    elif self.episode_lengths[id] < self.max_episode_length:  # early termination
                         next_values[i + 1, id] = 0.0
                     else:  # otherwise, use terminal value critic to estimate the long-term performance
                         real_obs = {k: v[[id]] for k, v in terminal_obs.items()}
@@ -471,28 +468,29 @@ class SHAC(ActorCriticBase):
                     self.done_mask[i, :] = 1.0
                 self.next_values[i] = next_values[i + 1].clone()
 
-            # collect episode loss
+            # collect episode metrics
             with torch.no_grad():
-                self.episode_loss -= raw_rew
-                self.episode_discounted_loss -= self.episode_gamma * raw_rew
+                self.episode_rewards += raw_rew
+                # self.episode_lengths incremented above
+                self.episode_discounted_rewards += self.episode_gamma * raw_rew
                 self.episode_gamma *= self.gamma
 
                 if len(done_env_ids) > 0:
                     done_env_ids = done_env_ids.detach().cpu()
-                    self.episode_loss_meter.update(self.episode_loss[done_env_ids])
-                    self.episode_discounted_loss_meter.update(self.episode_discounted_loss[done_env_ids])
-                    self.episode_length_meter.update(self.episode_length[done_env_ids])
+                    self.episode_rewards_meter.update(self.episode_rewards[done_env_ids])
+                    self.episode_lengths_meter.update(self.episode_lengths[done_env_ids])
+                    self.episode_discounted_rewards_meter.update(self.episode_discounted_rewards[done_env_ids])
 
                     for done_env_id in done_env_ids:
-                        if self.episode_loss[done_env_id] > 1e6 or self.episode_loss[done_env_id] < -1e6:
-                            print('ep loss error')
+                        if self.episode_rewards[done_env_id] > 1e6 or self.episode_rewards[done_env_id] < -1e6:
+                            print('ep_rewards error')
                             raise ValueError
-                        self.episode_loss_his.append(self.episode_loss[done_env_id].item())
-                        self.episode_discounted_loss_his.append(self.episode_discounted_loss[done_env_id].item())
-                        self.episode_length_his.append(self.episode_length[done_env_id].item())
-                        self.episode_loss[done_env_id] = 0.0
-                        self.episode_discounted_loss[done_env_id] = 0.0
-                        self.episode_length[done_env_id] = 0
+                        self.episode_rewards_hist.append(self.episode_rewards[done_env_id].item())
+                        self.episode_lengths_hist.append(self.episode_lengths[done_env_id].item())
+                        self.episode_discounted_rewards_hist.append(self.episode_discounted_rewards[done_env_id].item())
+                        self.episode_rewards[done_env_id] = 0.0
+                        self.episode_lengths[done_env_id] = 0
+                        self.episode_discounted_rewards[done_env_id] = 0.0
                         self.episode_gamma[done_env_id] = 1.0
 
         self.agent_steps += self.horizon_len * self.num_envs
@@ -555,13 +553,13 @@ class SHAC(ActorCriticBase):
 
     def eval(self):
         num_games = self.num_actors
-        mean_policy_loss, mean_policy_discounted_loss, mean_episode_length = self.evaluate_policy(
+        mean_episode_rewards, mean_episode_lengths, mean_episode_discounted_rewards = self.evaluate_policy(
             num_games=num_games, deterministic=not self.stochastic_evaluation
         )
         print(
-            f'mean episode loss = {mean_policy_loss},',
-            f'mean discounted loss = {mean_policy_discounted_loss},',
-            f'mean episode length = {mean_episode_length}',
+            f'mean ep_rewards = {mean_episode_rewards},',
+            f'mean ep_lengths = {mean_episode_lengths}',
+            f'mean ep_discounted_rewards = {mean_episode_discounted_rewards},',
         )
 
     def set_train(self):
