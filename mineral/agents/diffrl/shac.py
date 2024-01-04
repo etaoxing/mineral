@@ -152,7 +152,7 @@ class SHAC(ActorCriticBase):
         return actions
 
     @torch.no_grad()
-    def evaluate_policy(self, num_games, deterministic=False):
+    def evaluate_policy(self, num_episodes, deterministic=False):
         episode_rewards_hist = []
         episode_lengths_hist = []
         episode_discounted_rewards_hist = []
@@ -164,8 +164,8 @@ class SHAC(ActorCriticBase):
         obs = self.env.reset()
         obs = self._convert_obs(obs)
 
-        games_cnt = 0
-        while games_cnt < num_games:
+        episodes = 0
+        while episodes < num_episodes:
             if self.obs_rms is not None:
                 obs = {k: self.obs_rms[k].normalize(v) for k, v in obs.items()}
 
@@ -189,7 +189,7 @@ class SHAC(ActorCriticBase):
                     episode_lengths[done_env_id] = 0
                     episode_discounted_rewards[done_env_id] = 0.0
                     episode_gamma[done_env_id] = 1.0
-                    games_cnt += 1
+                    episodes += 1
 
         mean_episode_rewards = np.mean(np.array(episode_rewards_hist))
         mean_episode_lengths = np.mean(np.array(episode_lengths_hist))
@@ -544,9 +544,8 @@ class SHAC(ActorCriticBase):
             raise NotImplementedError(self.critic_method)
 
     def eval(self):
-        num_games = self.num_actors
         mean_episode_rewards, mean_episode_lengths, mean_episode_discounted_rewards = self.evaluate_policy(
-            num_games=num_games, deterministic=True,
+            num_episodes=self.num_actors, deterministic=True,
         )
         print(
             f'mean ep_rewards = {mean_episode_rewards},',
