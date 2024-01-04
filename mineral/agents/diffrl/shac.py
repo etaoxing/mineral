@@ -306,7 +306,7 @@ class SHAC(ActorCriticBase):
         self.save(os.path.join(self.ckpt_dir, 'final.pth'))
 
         # save reward/length history
-        self.episode_rewards_hist = np.array(self.episode_rewards_his)
+        self.episode_rewards_hist = np.array(self.episode_rewards_hist)
         self.episode_lengths_hist = np.array(self.episode_lengths_hist)
         self.episode_discounted_rewards_hist = np.array(self.episode_discounted_rewards_hist)
         np.save(open(os.path.join(self.logdir, 'ep_rewards_hist.npy'), 'wb'), self.episode_rewards_hist)
@@ -385,12 +385,18 @@ class SHAC(ActorCriticBase):
             actions = self.get_actions(obs, sample=not deterministic)
             obs, rew, done, extra_info = self.env.step(actions)
             obs = self._convert_obs(obs)
-            self.episode_lengths += 1
 
             with torch.no_grad():
                 raw_rew = rew.clone()
             # scale the reward
             rew = self.reward_shaper(rew)
+
+            # update episode metrics
+            with torch.no_grad():
+                self.episode_rewards += raw_rew
+                self.episode_lengths += 1
+                self.episode_discounted_rewards += self.episode_gamma * raw_rew
+                self.episode_gamma *= self.gamma
 
             if self.obs_rms is not None:
                 # update obs rms
@@ -470,11 +476,6 @@ class SHAC(ActorCriticBase):
 
             # collect episode metrics
             with torch.no_grad():
-                self.episode_rewards += raw_rew
-                # self.episode_lengths incremented above
-                self.episode_discounted_rewards += self.episode_gamma * raw_rew
-                self.episode_gamma *= self.gamma
-
                 if len(done_env_ids) > 0:
                     done_env_ids = done_env_ids.detach().cpu()
                     self.episode_rewards_meter.update(self.episode_rewards[done_env_ids])
