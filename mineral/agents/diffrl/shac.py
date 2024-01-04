@@ -275,20 +275,21 @@ class SHAC(ActorCriticBase):
 
             self._checkpoint_save(mean_episode_rewards)
 
-            print(
-                f'Epoch: {self.epoch} |',
-                f'Agent Steps: {int(self.agent_steps):,} |',
-                f'SPS: {timings["lastrate"]:.2f} |',
-                f'Best: {self.best_stat if self.best_stat is not None else -float("inf"):.2f} |',
-                f'Stats:',
-                f'ep_rewards {mean_episode_rewards:.2f},',
-                f'ep_lenths {mean_episode_lengths:.2f},',
-                f'ep_discounted_rewards {mean_episode_discounted_rewards:.2f},',
-                f'value_loss {metrics["train_stats/value_loss"]:.4f},',
-                f'grad_norm_before_clip {metrics["train_stats/grad_norm_before_clip"]:.2f},',
-                f'grad_norm_after_clip {metrics["train_stats/grad_norm_after_clip"]:.2f},',
-                f'\b\b |',
-            )
+            if self.print_every > 0 and (self.epoch + 1) % self.print_every == 0:
+                print(
+                    f'Epoch: {self.epoch} |',
+                    f'Agent Steps: {int(self.agent_steps):,} |',
+                    f'SPS: {timings["lastrate"]:.2f} |',
+                    f'Best: {self.best_stat if self.best_stat is not None else -float("inf"):.2f} |',
+                    f'Stats:',
+                    f'ep_rewards {mean_episode_rewards:.2f},',
+                    f'ep_lenths {mean_episode_lengths:.2f},',
+                    f'ep_discounted_rewards {mean_episode_discounted_rewards:.2f},',
+                    f'value_loss {metrics["train_stats/value_loss"]:.4f},',
+                    f'grad_norm_before_clip {metrics["train_stats/grad_norm_before_clip"]:.2f},',
+                    f'grad_norm_after_clip {metrics["train_stats/grad_norm_after_clip"]:.2f},',
+                    f'\b\b |',
+                )
 
         timings = self.timer.stats(step=self.agent_steps)
         print(timings)

@@ -1,20 +1,25 @@
 seed: ${..seed}
 algo: SHAC
 
+print_every: 1
+ckpt_every: 100
+
 network:
   encoder: null
+
   actor: Actor
   actor_kwargs:
     mlp_kwargs:
       units: [128, 64, 32]
-      act_type: ELU
       norm_type: LayerNorm
+      act_type: ELU
+
   critic: Critic
   critic_kwargs:
     mlp_kwargs:
       units: [64, 64]
-      act_type: ELU
       norm_type: LayerNorm
+      act_type: ELU
 
 shac:
   multi_gpu: ${...multi_gpu}
@@ -44,4 +49,3 @@ shac:
 
   normalize_input: True
   normalize_ret: False
-  save_interval: 400

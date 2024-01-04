@@ -27,7 +27,7 @@ class Actor(nn.Module):
         action_dim,
         fixed_sigma=True,
         init_sigma=-1.0,
-        mlp_kwargs=dict(act_type="ELU", norm_type="LayerNorm"),
+        mlp_kwargs=dict(norm_type="LayerNorm", act_type="ELU"),
         dist_kwargs=dict(dist="normal"),
         weight_init="orthogonal",
     ):
