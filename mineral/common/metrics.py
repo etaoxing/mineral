@@ -134,7 +134,7 @@ class Metrics(nn.Module):
 
     def flush_video_buf(self, epoch):
         if self.save_video_every > 0:
-            # saved video steps depends on horizon_length in play_steps()
+            # saved video steps depends on horizon_len in play_steps()
             if (epoch % self.save_video_every) == (self.save_video_consecutive - 1):
                 self._info_video = {f'video/{k}': np.concatenate(v, 1) for k, v in self._video_buf.items()}
                 self._video_buf = collections.defaultdict(list)

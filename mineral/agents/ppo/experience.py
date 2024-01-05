@@ -15,10 +15,10 @@ def transform_op(arr):
 
 
 class ExperienceBuffer(Dataset):
-    def __init__(self, num_envs, horizon_length, batch_size, minibatch_size, obs_space, act_dim, device, cpu_obs_keys):
+    def __init__(self, num_envs, horizon_len, batch_size, minibatch_size, obs_space, act_dim, device, cpu_obs_keys):
         self.device = device
         self.num_envs = num_envs
-        self.transitions_per_env = horizon_length
+        self.transitions_per_env = horizon_len
         self.cpu_obs_keys = cpu_obs_keys
 
         self.data_dict = None

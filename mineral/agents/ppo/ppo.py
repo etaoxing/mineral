@@ -73,8 +73,8 @@ class PPO(DAPGMixin, ActorCriticBase):
         self.normalize_value = self.ppo_config['normalize_value']
 
         # ---- PPO Collect Params ----
-        self.horizon_length = self.ppo_config['horizon_length']
-        self.batch_size = self.horizon_length * self.num_actors
+        self.horizon_len = self.ppo_config['horizon_len']
+        self.batch_size = self.horizon_len * self.num_actors
         self.minibatch_size = self.ppo_config['minibatch_size']
         self.mini_epochs = self.ppo_config['mini_epochs']
         assert self.batch_size % self.minibatch_size == 0 or full_cfg.test
@@ -91,7 +91,7 @@ class PPO(DAPGMixin, ActorCriticBase):
         self.obs, self.dones = None, None
         self.storage = ExperienceBuffer(
             self.num_actors,
-            self.horizon_length,
+            self.horizon_len,
             self.batch_size,
             self.minibatch_size,
             self.obs_space,
@@ -125,7 +125,7 @@ class PPO(DAPGMixin, ActorCriticBase):
         return model_out
 
     def play_steps(self):
-        for n in range(self.horizon_length):
+        for n in range(self.horizon_len):
             if not self.env_autoresets:
                 if any(self.dones):
                     done_indices = torch.where(self.dones)[0].tolist()
@@ -190,32 +190,54 @@ class PPO(DAPGMixin, ActorCriticBase):
             self.agent_steps += self.batch_size if not self.multi_gpu else self.batch_size * self.rank_size
 
             self.set_train()
-            train_result = self.train_epoch()
+            results = self.train_epoch()
             self.storage.data_dict = None
 
             if not self.multi_gpu or (self.multi_gpu and self.rank == 0):
-                timings = self.timer.stats(step=self.agent_steps, total_names=('agent.play_steps', 'agent.train_epoch'))
-                info_string = (
-                    f'Epoch: {self.epoch} | '
-                    f'Agent Steps: {int(self.agent_steps):,} | '
-                    f'SPS: {timings["totalrate"]:.1f} | '
-                    f'Last SPS: {timings["lastrate"]:.1f} | '
-                    f'Collect Time: {timings["agent.play_steps/total"] / 60:.1f} min | '
-                    f'Train RL Time: {timings["agent.train_epoch/total"] / 60:.1f} min | '
-                    f'Current Best: {self.best_stat if self.best_stat is not None else -float("inf"):.2f}'
+                # gather train metrics
+                metrics = {k: torch.mean(torch.stack(v)).item() for k, v in results.items()}
+                metrics.update({k: torch.mean(torch.cat(results[k])).item() for k in ["mu", "sigma"]})  # distributions
+                metrics.update(
+                    {'epoch': self.epoch, 'mini_epoch': self.mini_epoch, 'last_lr': self.last_lr, 'e_clip': self.e_clip}
                 )
-                print(info_string)
+                metrics = {f"train_stats/{k}": v for k, v in metrics.items()}
 
-                metrics = self.summary_stats(timings, train_result)
+                # timing metrics
+                timings_total_names = ('agent.play_steps', 'agent.train_epoch')
+                timings = self.timer.stats(step=self.agent_steps, total_names=timings_total_names)
+                timing_metrics = {f'train_timings/{k}': v for k, v in timings.items()}
+                metrics.update(timing_metrics)
+
+                # episode metrics
+                episode_metrics = {
+                    'train_scores/episode_rewards': self.metrics.episode_rewards.mean(),
+                    'train_scores/episode_lengths': self.metrics.episode_lengths.mean(),
+                }
+                metrics.update(episode_metrics)
                 metrics = self.metrics.result(metrics)
+
                 self.writer.add(self.agent_steps, metrics)
                 self.writer.write()
 
-                self._checkpoint_save(metrics['metrics/episode_rewards'])
+                self._checkpoint_save(metrics['train_scores/episode_rewards'])
+
+                if self.print_every > 0 and (self.epoch + 1) % self.print_every == 0:
+                    print(
+                        f'Epoch: {self.epoch} |',
+                        f'Agent Steps: {int(self.agent_steps):,} |',
+                        f'SPS: {timings["totalrate"]:.2f} |',
+                        f'Best: {self.best_stat if self.best_stat is not None else -float("inf"):.2f} |',
+                        f'Stats:',
+                        f'last_sps {timings["lastrate"]:.2f},'
+                        f'collectEnv_time {timings["agent.play_steps/total"] / 60:.1f} min,',
+                        f'trainRL_time {timings["agent.train_epoch/total"] / 60:.1f} min,',
+                        f'\b\b |',
+                    )
+
         self.save(os.path.join(self.ckpt_dir, 'final.pth'))
 
     def train_epoch(self):
-        train_result = collections.defaultdict(list)
+        results = collections.defaultdict(list)
         for mini_ep in range(0, self.mini_epochs):
             self.mini_epoch += 1
             ep_kls = []
@@ -281,26 +303,27 @@ class PPO(DAPGMixin, ActorCriticBase):
 
                 self.storage.update_mu_sigma(mu.detach(), sigma.detach())
                 ep_kls.append(kl_dist)
-                train_result['loss'].append(loss)
-                train_result['a_loss'].append(a_loss)
-                train_result['c_loss'].append(c_loss)
-                train_result['b_loss'].append(b_loss)
-                train_result['entropy'].append(entropy)
-                train_result['clip_frac'].append(clip_frac)
-                train_result['explained_var'].append(explained_var)
-                train_result['mu'].append(mu.detach())
-                train_result['sigma'].append(sigma.detach())
+
+                results['loss/total'].append(loss)
+                results['loss/actor'].append(a_loss)
+                results['loss/critic'].append(c_loss)
+                results['loss/bounds'].append(b_loss)
+                results['loss/entropy'].append(entropy)
+                results['clip_frac'].append(clip_frac)
+                results['explained_var'].append(explained_var)
+                results['mu'].append(mu.detach())
+                results['sigma'].append(sigma.detach())
                 if self.truncate_grads:
-                    train_result['grad_norm/all'].append(grad_norm_all)
+                    results['grad_norm/all'].append(grad_norm_all)
 
                 if self.dapg_config is not None:
-                    train_result['dapg_demo_nll_loss'].append(demo_nll_loss)
-                    train_result['dapg_demo_actor_loss'].append(demo_actor_loss)
-                    train_result['dapg_lambda'].append(torch.tensor(self.dapg_lambda))
+                    results['dapg/demo_nll_loss'].append(demo_nll_loss)
+                    results['dapg/demo_actor_loss'].append(demo_actor_loss)
+                    results['dapg/lambda'].append(torch.tensor(self.dapg_lambda))
                     self.update_dapg_lambda()
 
             avg_kl = torch.mean(torch.stack(ep_kls))
-            train_result['avg_kl'].append(avg_kl)
+            results['avg_kl'].append(avg_kl)
 
             if self.lr_schedule == 'kl':
                 self.last_lr = self.scheduler.update(self.last_lr, avg_kl.item())
@@ -315,39 +338,7 @@ class PPO(DAPGMixin, ActorCriticBase):
         if self.lr_schedule == 'linear':
             self.last_lr = self.scheduler.update(self.agent_steps)
 
-        return train_result
-
-    def summary_stats(self, timings, train_result):
-        metrics = {
-            'metrics/episode_rewards': self.metrics.episode_rewards.mean(),
-            'metrics/episode_lengths': self.metrics.episode_lengths.mean(),
-        }
-        for k, v in timings.items():
-            metrics[f'timings/{k}'] = v
-        log_dict = {
-            'train/loss/total': torch.mean(torch.stack(train_result['loss'])).item(),
-            'train/loss/actor': torch.mean(torch.stack(train_result['a_loss'])).item(),
-            'train/loss/bounds': torch.mean(torch.stack(train_result['b_loss'])).item(),
-            'train/loss/critic': torch.mean(torch.stack(train_result['c_loss'])).item(),
-            'train/loss/entropy': torch.mean(torch.stack(train_result['entropy'])).item(),
-            'train/avg_kl': torch.mean(torch.stack(train_result['avg_kl'])).item(),
-            'train/clip_frac': torch.mean(torch.stack(train_result['clip_frac'])).item(),
-            'train/explained_var': torch.mean(torch.stack(train_result['explained_var'])).item(),
-            'train/grad_norm/all': torch.mean(torch.stack(train_result['grad_norm/all'])).item() if self.truncate_grads else 0,
-            'train/actor_dist/mu': torch.mean(torch.cat(train_result['mu']), 0).cpu().numpy(),
-            'train/actor_dist/sigma': torch.mean(torch.cat(train_result['sigma']), 0).cpu().numpy(),
-            'train/last_lr': self.last_lr,
-            'train/e_clip': self.e_clip,
-            'train/epoch': self.epoch,
-        }
-        if self.dapg_config is not None:
-            dapg_log_dict = {
-                'train/dapg/demo_nll_loss': torch.mean(torch.stack(train_result['dapg_demo_nll_loss'])).item(),
-                'train/dapg/demo_actor_loss': torch.mean(torch.stack(train_result['dapg_demo_actor_loss'])).item(),
-                'train/dapg/lambda': torch.mean(torch.stack(train_result['dapg_lambda'])).item(),
-            }
-            log_dict.update(dapg_log_dict)
-        return {**metrics, **log_dict}
+        return results
 
     def eval(self):
         self.set_eval()

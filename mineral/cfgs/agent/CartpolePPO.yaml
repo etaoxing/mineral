@@ -50,7 +50,7 @@ ppo:
   bounds_type: bound
   max_grad_norm: 1.0
   truncate_grads: True
-  horizon_length: 16
+  horizon_len: 16
   minibatch_size: 8192
   mini_epochs: 8
   max_agent_steps: 1.5e6
