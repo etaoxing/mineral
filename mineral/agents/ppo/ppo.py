@@ -379,14 +379,15 @@ class PPO(DAPGMixin, ActorCriticBase):
         # TODO: accelerator.save
 
     def load(self, f, ckpt_keys=''):
+        all_ckpt_keys = ('epoch', 'mini_epoch', 'agent_steps', 'model', 'optim', 'obs_rms', 'value_rms')
         ckpt = torch.load(f, map_location=self.device)
-        for k in ('epoch', 'mini_epoch', 'agent_steps', 'model', 'optim', 'obs_rms', 'value_rms'):
+        for k in all_ckpt_keys:
             if not re.match(ckpt_keys, k):
                 print(f'Warning: ckpt skipped loading `{k}`')
                 continue
-            if k == 'obs_rms' and not self.normalize_input:
+            if k == 'obs_rms' and (not self.normalize_input):
                 continue
-            if k == 'value_rms' and not self.normalize_value:
+            if k == 'value_rms' and (not self.normalize_value):
                 continue
 
             if hasattr(getattr(self, k), 'load_state_dict'):

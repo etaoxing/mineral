@@ -400,8 +400,8 @@ class BPTT(ActorCriticBase):
         torch.save(ckpt, f)
 
     def load(self, f, ckpt_keys=''):
-        ckpt = torch.load(f, map_location=self.device)
         all_ckpt_keys = ('actor', 'obs_rms')
+        ckpt = torch.load(f, map_location=self.device)
         for k in all_ckpt_keys:
             if not re.match(ckpt_keys, k):
                 print(f'Warning: ckpt skipped loading `{k}`')

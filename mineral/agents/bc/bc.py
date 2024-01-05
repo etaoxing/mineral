@@ -253,19 +253,18 @@ class BC(ActorCriticBase):
             'obs_rms': self.obs_rms.state_dict() if self.normalize_input else None,
         }
         torch.save(ckpt, f)
-        # TODO: accelerator.save
 
     def load(self, f, ckpt_keys=''):
+        all_ckpt_keys = ('epoch', 'mini_epoch', 'model', 'optim', 'obs_rms')
         ckpt = torch.load(f, map_location=self.device)
-        for k in ('epoch', 'mini_epoch', 'model', 'optim', 'obs_rms'):
+        for k in all_ckpt_keys:
             if not re.match(ckpt_keys, k):
                 print(f'Warning: ckpt skipped loading `{k}`')
                 continue
-            if k == 'obs_rms' and not self.normalize_input:
+            if k == 'obs_rms' and (not self.normalize_input):
                 continue
 
             if hasattr(getattr(self, k), 'load_state_dict'):
-                # TODO: accelerator.load
                 getattr(self, k).load_state_dict(ckpt[k])
             else:
                 setattr(self, k, ckpt[k])
