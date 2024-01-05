@@ -8,14 +8,14 @@ import torch.nn as nn
 from ...common import normalizers
 from ...common.reward_shaper import RewardShaper
 from ...common.timer import Timer
-from ..actorcritic_base import ActorCriticBase
+from ..agent import Agent
 from . import models
 from .dapg import DAPGMixin
 from .experience import ExperienceBuffer
 from .utils import AdaptiveScheduler, LinearScheduler, adjust_learning_rate_cos
 
 
-class PPO(DAPGMixin, ActorCriticBase):
+class PPO(DAPGMixin, Agent):
     def __init__(self, full_cfg, **kwargs):
         self.network_config = full_cfg.agent.network
         self.ppo_config = full_cfg.agent.ppo

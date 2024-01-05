@@ -12,7 +12,7 @@ from torch import nn
 from ...buffers import NStepReplay, ReplayBuffer
 from ...common import normalizers
 from ...common.reward_shaper import RewardShaper
-from ..actorcritic_base import ActorCriticBase
+from ..agent import Agent
 from ..ddpg import models
 from ..ddpg.utils import soft_update
 
@@ -26,7 +26,7 @@ class Lambda(nn.Module):
         return self.fn(x)
 
 
-class SAC(ActorCriticBase):
+class SAC(Agent):
     def __init__(self, full_cfg, **kwargs):
         self.network_config = full_cfg.agent.network
         self.sac_config = full_cfg.agent.sac

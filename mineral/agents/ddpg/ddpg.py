@@ -10,14 +10,14 @@ import torch.nn.functional as F
 from ...buffers import NStepReplay, ReplayBuffer
 from ...common import normalizers
 from ...common.reward_shaper import RewardShaper
-from ..actorcritic_base import ActorCriticBase
+from ..agent import Agent
 from . import models
 from .noise import add_mixed_normal_noise, add_normal_noise
 from .schedule_util import ExponentialSchedule, LinearSchedule
 from .utils import distl_projection, soft_update
 
 
-class DDPG(ActorCriticBase):
+class DDPG(Agent):
     def __init__(self, full_cfg, **kwargs):
         self.network_config = full_cfg.agent.network
         self.ddpg_config = full_cfg.agent.ddpg

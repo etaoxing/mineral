@@ -8,11 +8,11 @@ import torch.nn.functional as F
 
 from ...common import normalizers
 from ...common.reward_shaper import RewardShaper
-from ..actorcritic_base import ActorCriticBase
+from ..agent import Agent
 from . import models
 
 
-class BC(ActorCriticBase):
+class BC(Agent):
     def __init__(self, full_cfg, **kwargs):
         self.network_config = full_cfg.agent.network
         self.bc_config = full_cfg.agent.bc

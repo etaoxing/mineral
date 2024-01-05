@@ -10,7 +10,7 @@ from ..common.metrics import Metrics
 from ..common.writer import TensorboardWriter, WandbWriter, Writer
 
 
-class ActorCriticBase:
+class Agent:
     def __init__(self, full_cfg, logdir=None, accelerator=None, datasets=None, env=None):
         self.full_cfg = full_cfg
         self.logdir = logdir

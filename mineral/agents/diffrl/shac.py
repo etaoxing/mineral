@@ -18,12 +18,12 @@ from ...common import normalizers
 from ...common.reward_shaper import RewardShaper
 from ...common.timer import Timer
 from ...common.tracker import Tracker
-from ..actorcritic_base import ActorCriticBase
+from ..agent import Agent
 from . import models
 from .utils import CriticDataset, grad_norm
 
 
-class SHAC(ActorCriticBase):
+class SHAC(Agent):
     def __init__(self, full_cfg, **kwargs):
         self.network_config = full_cfg.agent.network
         self.shac_config = full_cfg.agent.shac
