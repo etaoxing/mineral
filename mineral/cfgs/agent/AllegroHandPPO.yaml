@@ -22,16 +22,12 @@ network:
 
     #   norm_type: null
     #   act_type: ELU
-    # actor_dist_kwargs:
-    #   dist: normal
+    # actor_dist_kwargs: {dist_type: normal}
     # fixed_sigma: True
 
       norm_type: LayerNorm
       act_type: SiLU
-    actor_dist_kwargs:
-      dist: dreamerv3_normal
-      minstd: 0.1
-      maxstd: 1.0
+    actor_dist_kwargs: {dist_type: dreamerv3_normal, minstd: 0.1, maxstd: 1.0}
     fixed_sigma: False
 
 ppo:

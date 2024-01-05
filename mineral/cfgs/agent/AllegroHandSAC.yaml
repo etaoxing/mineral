@@ -21,10 +21,7 @@ network:
 
     tanh_policy: False
     fixed_sigma: False
-    dist_kwargs:
-      dist: squashed_normal
-      minlogstd: -5.0
-      maxlogstd: 5.0
+    dist_kwargs: {dist_type: squashed_normal, minlogstd: -5.0, maxlogstd: 5.0}
 
   critic: EnsembleQ
   critic_kwargs:

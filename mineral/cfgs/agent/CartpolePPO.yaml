@@ -17,11 +17,9 @@ network:
     separate_value_mlp: True
     mlp_kwargs:
       units: [32, 32]
-
       norm_type: null
       act_type: ELU
-    actor_dist_kwargs:
-      dist: normal
+    actor_dist_kwargs: {dist_type: normal}
     fixed_sigma: True
 
 ppo:

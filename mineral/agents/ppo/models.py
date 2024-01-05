@@ -25,7 +25,7 @@ class ActorCritic(nn.Module):
         mlp_kwargs=dict(units=[512, 256, 128], act_type="ELU"),
         separate_value_mlp=True,
         fixed_sigma=True,
-        actor_dist_kwargs=dict(dist='normal'),
+        actor_dist_kwargs=dict(dist_type='normal'),
         encoder=None,
         encoder_kwargs=None,
     ):
