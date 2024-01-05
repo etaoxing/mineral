@@ -131,94 +131,7 @@ class BPTT:
 
         # timer
         self.time_report = TimeReport()
-        
-    def compute_actor_loss(self, deterministic = False):
-        rew_acc = torch.zeros((self.steps_num + 1, self.num_envs), dtype = torch.float32, device = self.device)
-        gamma = torch.ones(self.num_envs, dtype = torch.float32, device = self.device)
-        
-        actor_loss = torch.tensor(0., dtype = torch.float32, device = self.device)
 
-        with torch.no_grad():
-            if self.obs_rms is not None:
-                obs_rms = copy.deepcopy(self.obs_rms)
-
-        obs = self.env.initialize_trajectory()
-        
-        if self.obs_rms is not None:
-            # update obs rms
-            with torch.no_grad():
-                self.obs_rms.update(obs)
-            # normalize the current obs
-            obs = obs_rms.normalize(obs)
-
-        for i in range(self.steps_num):
-            actions = self.actor(obs, deterministic = deterministic)
-
-            obs, rew, done, extra_info = self.env.step(torch.tanh(actions))
-            
-            with torch.no_grad():
-                raw_rew = rew.clone()
-            
-            # scale the reward
-            rew = rew * self.rew_scale
-            
-            if self.obs_rms is not None:
-                # update obs rms
-                with torch.no_grad():
-                    self.obs_rms.update(obs)
-                # normalize the current obs
-                obs = obs_rms.normalize(obs)
-
-            self.episode_length += 1
-
-            done_env_ids = done.nonzero(as_tuple = False).squeeze(-1)
-
-            # JIE
-            rew_acc[i + 1, :] = rew_acc[i, :] + gamma * rew
-
-            if i < self.steps_num - 1:
-                actor_loss = actor_loss + (- rew_acc[i + 1, done_env_ids]).sum()
-            else:
-                # terminate all envs at the end of optimization iteration
-                actor_loss = actor_loss + (- rew_acc[i + 1, :]).sum()
-        
-            # compute gamma for next step
-            gamma = gamma * self.gamma
-
-            # clear up gamma and rew_acc for done envs
-            gamma[done_env_ids] = 1.
-            rew_acc[i + 1, done_env_ids] = 0.
-
-            # collect episode loss
-            with torch.no_grad():
-                self.episode_loss -= raw_rew
-                self.episode_discounted_loss -= self.episode_gamma * raw_rew
-                self.episode_gamma *= self.gamma
-                if len(done_env_ids) > 0:
-                    self.episode_loss_meter.update(self.episode_loss[done_env_ids])
-                    self.episode_discounted_loss_meter.update(self.episode_discounted_loss[done_env_ids])
-                    self.episode_length_meter.update(self.episode_length[done_env_ids])
-                    for done_env_id in done_env_ids:
-                        if (self.episode_loss[done_env_id] > 1e6 or self.episode_loss[done_env_id] < -1e6):
-                            print('ep loss error')
-                            import IPython
-                            IPython.embed()
-                        self.episode_loss_his.append(self.episode_loss[done_env_id].item())
-                        self.episode_discounted_loss_his.append(self.episode_discounted_loss[done_env_id].item())
-                        self.episode_length_his.append(self.episode_length[done_env_id].item())
-                        self.episode_loss[done_env_id] = 0.
-                        self.episode_discounted_loss[done_env_id] = 0.
-                        self.episode_length[done_env_id] = 0
-                        self.episode_gamma[done_env_id] = 1.
-
-        actor_loss /= self.steps_num * self.num_envs
-            
-        self.actor_loss = actor_loss.detach().cpu().item()
-            
-        self.step_count += self.steps_num * self.num_envs
-
-        return actor_loss
-    
     @torch.no_grad()
     def evaluate_policy(self, num_games, deterministic = False):
         episode_length_his = []
@@ -269,11 +182,6 @@ class BPTT:
         self.env.clear_grad()
         self.env.reset()
 
-    @torch.no_grad()
-    def run(self, num_games):
-        mean_policy_loss, mean_policy_discounted_loss, mean_episode_length = self.evaluate_policy(num_games = num_games, deterministic = not self.stochastic_evaluation)
-        print_info('mean episode loss = {}, mean discounted loss = {}, mean episode length = {}'.format(mean_policy_loss, mean_policy_discounted_loss, mean_episode_length))
-        
     def train(self):
         self.start_time = time.time()
 
@@ -404,7 +312,99 @@ class BPTT:
         self.run(self.num_envs)
 
         self.close()
+
+    def compute_actor_loss(self, deterministic = False):
+        rew_acc = torch.zeros((self.steps_num + 1, self.num_envs), dtype = torch.float32, device = self.device)
+        gamma = torch.ones(self.num_envs, dtype = torch.float32, device = self.device)
+        
+        actor_loss = torch.tensor(0., dtype = torch.float32, device = self.device)
+
+        with torch.no_grad():
+            if self.obs_rms is not None:
+                obs_rms = copy.deepcopy(self.obs_rms)
+
+        obs = self.env.initialize_trajectory()
+        
+        if self.obs_rms is not None:
+            # update obs rms
+            with torch.no_grad():
+                self.obs_rms.update(obs)
+            # normalize the current obs
+            obs = obs_rms.normalize(obs)
+
+        for i in range(self.steps_num):
+            actions = self.actor(obs, deterministic = deterministic)
+
+            obs, rew, done, extra_info = self.env.step(torch.tanh(actions))
+            
+            with torch.no_grad():
+                raw_rew = rew.clone()
+            
+            # scale the reward
+            rew = rew * self.rew_scale
+            
+            if self.obs_rms is not None:
+                # update obs rms
+                with torch.no_grad():
+                    self.obs_rms.update(obs)
+                # normalize the current obs
+                obs = obs_rms.normalize(obs)
+
+            self.episode_length += 1
+
+            done_env_ids = done.nonzero(as_tuple = False).squeeze(-1)
+
+            # JIE
+            rew_acc[i + 1, :] = rew_acc[i, :] + gamma * rew
+
+            if i < self.steps_num - 1:
+                actor_loss = actor_loss + (- rew_acc[i + 1, done_env_ids]).sum()
+            else:
+                # terminate all envs at the end of optimization iteration
+                actor_loss = actor_loss + (- rew_acc[i + 1, :]).sum()
+        
+            # compute gamma for next step
+            gamma = gamma * self.gamma
+
+            # clear up gamma and rew_acc for done envs
+            gamma[done_env_ids] = 1.
+            rew_acc[i + 1, done_env_ids] = 0.
+
+            # collect episode loss
+            with torch.no_grad():
+                self.episode_loss -= raw_rew
+                self.episode_discounted_loss -= self.episode_gamma * raw_rew
+                self.episode_gamma *= self.gamma
+                if len(done_env_ids) > 0:
+                    self.episode_loss_meter.update(self.episode_loss[done_env_ids])
+                    self.episode_discounted_loss_meter.update(self.episode_discounted_loss[done_env_ids])
+                    self.episode_length_meter.update(self.episode_length[done_env_ids])
+                    for done_env_id in done_env_ids:
+                        if (self.episode_loss[done_env_id] > 1e6 or self.episode_loss[done_env_id] < -1e6):
+                            print('ep loss error')
+                            import IPython
+                            IPython.embed()
+                        self.episode_loss_his.append(self.episode_loss[done_env_id].item())
+                        self.episode_discounted_loss_his.append(self.episode_discounted_loss[done_env_id].item())
+                        self.episode_length_his.append(self.episode_length[done_env_id].item())
+                        self.episode_loss[done_env_id] = 0.
+                        self.episode_discounted_loss[done_env_id] = 0.
+                        self.episode_length[done_env_id] = 0
+                        self.episode_gamma[done_env_id] = 1.
+
+        actor_loss /= self.steps_num * self.num_envs
+            
+        self.actor_loss = actor_loss.detach().cpu().item()
+            
+        self.step_count += self.steps_num * self.num_envs
+
+        return actor_loss
     
+    @torch.no_grad()
+    def run(self, num_games):
+        mean_policy_loss, mean_policy_discounted_loss, mean_episode_length = self.evaluate_policy(num_games = num_games, deterministic = not self.stochastic_evaluation)
+        print_info('mean episode loss = {}, mean discounted loss = {}, mean episode length = {}'.format(mean_policy_loss, mean_policy_discounted_loss, mean_episode_length))
+            
     def play(self, cfg):
         self.load(cfg['params']['general']['checkpoint'])
         self.run(cfg['params']['config']['player']['games_num'])
