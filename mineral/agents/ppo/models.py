@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from ...nets import Dist, MultiEncoder
+from ...nets import MLP, Dist, MultiEncoder
 
 
 def weight_init(m):
@@ -17,34 +17,12 @@ def weight_init(m):
             nn.init.zeros_(m.bias)
 
 
-class MLP(nn.Module):
-    def __init__(self, in_size, units=[512, 256, 128], norm_type=None, act_type='ELU'):
-        super().__init__()
-        self.out_dim = units[-1]
-        layers = []
-        for out_size in units:
-            layers.append(nn.Linear(in_size, out_size))
-            if norm_type is not None:
-                module = torch.nn
-                Cls = getattr(module, norm_type)
-                layers.append(Cls(out_size))
-            if act_type is not None:
-                module = torch.nn.modules.activation
-                Cls = getattr(module, act_type)
-                layers.append(Cls())
-            in_size = out_size
-        self.mlp = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.mlp(x)
-
-
 class ActorCritic(nn.Module):
     def __init__(
         self,
         obs_space,
         action_dim,
-        mlp_kwargs={},
+        mlp_kwargs=dict(units=[512, 256, 128], act_type="ELU"),
         separate_value_mlp=True,
         fixed_sigma=True,
         actor_dist_kwargs=dict(dist='normal'),
@@ -63,9 +41,9 @@ class ActorCritic(nn.Module):
             self.encoder = MultiEncoder(obs_space, encoder_kwargs)
             mlp_in_dim = self.encoder.out_dim
 
-        self.actor_mlp = MLP(in_size=mlp_in_dim, **mlp_kwargs)
+        self.actor_mlp = MLP(mlp_in_dim, **mlp_kwargs)
         if self.separate_value_mlp:
-            self.value_mlp = MLP(in_size=mlp_in_dim, **mlp_kwargs)
+            self.value_mlp = MLP(mlp_in_dim, **mlp_kwargs)
         out_size = self.actor_mlp.out_dim
         self.value = nn.Linear(out_size, 1)
         self.mu = nn.Linear(out_size, action_dim)
