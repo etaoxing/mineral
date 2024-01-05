@@ -2,7 +2,6 @@ import numpy as np
 import torch
 
 
-
 def grad_norm(params):
     grad_norm = 0.0
     for p in params:

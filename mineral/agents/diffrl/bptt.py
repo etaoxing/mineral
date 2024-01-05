@@ -183,25 +183,28 @@ class BPTT(ActorCriticBase):
             actor_results = self.update_actor()
             self.timer.end("train/update_actor")
 
-            # gather metrics
+            # gather train metrics
             results = {**actor_results}
             metrics = {k: torch.mean(torch.stack(v)).item() for k, v in results.items()}
-            metrics = {"epoch": self.epoch, "lr": lr, **metrics}
+            metrics.update({"epoch": self.epoch, "lr": lr})
             metrics = {f"train_stats/{k}": v for k, v in metrics.items()}
 
+            # timing metrics
             timings_total_names = ("train/update_actor", "train/make_critic_dataset", "train/update_critic")
             timings = self.timer.stats(step=self.agent_steps, total_names=timings_total_names, reset=False)
-            metrics = {**metrics, **{f"train_timings/{k}": v for k, v in timings.items()}}
+            timing_metrics = {f"train_timings/{k}": v for k, v in timings.items()}
+            metrics.update(timing_metrics)
 
+            # episode metrics
             if len(self.episode_rewards_hist) > 0:
                 mean_episode_rewards = self.episode_rewards_tracker.mean()
                 mean_episode_lengths = self.episode_lengths_tracker.mean()
                 mean_episode_discounted_rewards = self.episode_discounted_rewards_tracker.mean()
 
                 episode_metrics = {
-                    "train_metrics/episode_rewards": mean_episode_rewards,
-                    "train_metrics/episode_lengths": mean_episode_lengths,
-                    "train_metrics/episode_discounted_rewards": mean_episode_discounted_rewards,
+                    "train_scores/episode_rewards": mean_episode_rewards,
+                    "train_scores/episode_lengths": mean_episode_lengths,
+                    "train_scores/episode_discounted_rewards": mean_episode_discounted_rewards,
                 }
                 metrics.update(episode_metrics)
             else:
@@ -218,7 +221,7 @@ class BPTT(ActorCriticBase):
                 print(
                     f'Epoch: {self.epoch} |',
                     f'Agent Steps: {int(self.agent_steps):,} |',
-                    f'SPS: {timings["lastrate"]:.2f} |',
+                    f'SPS: {timings["lastrate"]:.2f} |',  # actually totalrate since we don't reset the timer
                     f'Best: {self.best_stat if self.best_stat is not None else -float("inf"):.2f} |',
                     f'Stats:',
                     f'ep_rewards {mean_episode_rewards:.2f},',
