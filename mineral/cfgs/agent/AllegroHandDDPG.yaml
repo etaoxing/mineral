@@ -16,6 +16,7 @@ network:
     tanh_policy: True
     mlp_kwargs:
       units: [512, 256, 128]
+      act_type: ELU
     #   norm_type: LayerNorm
     #   act_type: SiLU
     # weight_init: orthogonal
@@ -24,7 +25,9 @@ network:
   critic_kwargs:
     # n_critics: 3
     n_critics: 2
-    # mlp_kwargs:
+    mlp_kwargs:
+      units: [512, 256, 128]
+      act_type: ELU
     #   norm_type: LayerNorm
     #   act_type: SiLU
     # weight_init: orthogonal

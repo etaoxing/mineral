@@ -1,51 +1,8 @@
-from typing import Sequence
-
 import torch
 import torch.nn as nn
-from torch import Tensor
 
-from ...nets import Dist
+from ...nets import MLP, Dist
 from .utils import weight_init_orthogonal_, weight_init_uniform_
-
-
-class MLP(nn.Module):
-    def __init__(
-        self,
-        in_dim,
-        out_dim=None,
-        units=[512, 256, 128],
-        norm_type=None,
-        norm_kwargs={},
-        act_type="ELU",
-        act_kwargs=dict(inplace=True),
-        plain_last=None,
-    ):
-        super().__init__()
-        if out_dim is not None:
-            units = [*units, out_dim]
-        if plain_last is None:
-            plain_last = True if out_dim is not None else False
-        layers = []
-        for i, output_size in enumerate(units):
-            layers.append(nn.Linear(in_dim, output_size))
-            if plain_last and i == len(units) - 1:
-                break
-            if norm_type is not None:
-                module = torch.nn
-                Cls = getattr(module, norm_type)
-                norm = Cls(output_size, **norm_kwargs)
-                layers.append(norm)
-            if act_type is not None:
-                module = torch.nn.modules.activation
-                Cls = getattr(module, act_type)
-                act = Cls(**act_kwargs)
-                layers.append(act)
-            in_dim = output_size
-        self.mlp = nn.Sequential(*layers)
-        self.out_dim = units[-1]
-
-    def forward(self, x):
-        return self.mlp(x)
 
 
 class Actor(nn.Module):
@@ -55,7 +12,7 @@ class Actor(nn.Module):
         action_dim,
         tanh_policy=True,
         fixed_sigma=None,
-        mlp_kwargs={},
+        mlp_kwargs=dict(units=[512, 256, 128], act_type="ELU"),
         dist_kwargs={},
         weight_init=None,
     ):
@@ -63,7 +20,7 @@ class Actor(nn.Module):
         self.tanh_policy = tanh_policy
         self.fixed_sigma = fixed_sigma
 
-        self.actor_mlp = MLP(state_dim, None, **mlp_kwargs)
+        self.actor_mlp = MLP(state_dim, **mlp_kwargs)
         self.mu = nn.Linear(self.actor_mlp.out_dim, action_dim)
         if self.tanh_policy:
             pass
@@ -114,7 +71,7 @@ class EnsembleQ(nn.Module):
         self.n_critics = n_critics
         critics = []
         for _ in range(n_critics):
-            q = MLP(state_dim + action_dim, out_dim=1, **mlp_kwargs)
+            q = MLP(state_dim + action_dim, out_dim=1, plain_last=True, **mlp_kwargs)
             critics.append(q)
         self.critics = nn.ModuleList(critics)
 
@@ -167,7 +124,7 @@ class DistributionalEnsembleQ(nn.Module):
         self.n_critics = n_critics
         critics = []
         for _ in range(n_critics):
-            q = MLP(state_dim + action_dim, out_dim=num_atoms, **mlp_kwargs)
+            q = MLP(state_dim + action_dim, out_dim=num_atoms, plain_last=True, **mlp_kwargs)
             critics.append(q)
         self.critics = nn.ModuleList(critics)
 
