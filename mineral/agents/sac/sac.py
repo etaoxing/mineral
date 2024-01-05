@@ -192,54 +192,47 @@ class SAC(ActorCriticBase):
             self.memory.add_to_buffer(trajectory)
 
             self.set_train()
-            metrics = self.update_net(self.memory)
+            results = self.update_net(self.memory)
+
+            # gather train metrics
+            metrics = {k: torch.mean(torch.stack(v)).item() for k, v in results.items()}
+            metrics.update({"epoch": self.epoch, "mini_epoch": self.mini_epoch, "alpha": self.get_alpha(scalar=True)})
+            metrics = {f"train_stats/{k}": v for k, v in metrics.items()}
+
+            # episode metrics
+            episode_metrics = {
+                "train_scores/episode_rewards": self.metrics.episode_rewards.mean(),
+                "train_scores/episode_lengths": self.metrics.episode_lengths.mean(),
+            }
+            metrics.update(episode_metrics)
             metrics = self.metrics.result(metrics)
+
             self.writer.add(self.agent_steps, metrics)
             self.writer.write()
 
         self.save(os.path.join(self.ckpt_dir, 'final.pth'))
 
     def update_net(self, memory):
-        train_result = collections.defaultdict(list)
+        results = collections.defaultdict(list)
         for i in range(self.sac_config.mini_epochs):
             self.mini_epoch += 1
             obs, action, reward, next_obs, done = memory.sample_batch(self.sac_config.batch_size)
 
             critic_loss, critic_grad_norm = self.update_critic(obs, action, reward, next_obs, done)
-            train_result["critic_loss"].append(critic_loss)
-            train_result["critic_grad_norm"].append(critic_grad_norm)
+            results["loss/critic"].append(critic_loss)
+            results["grad_norm/critic"].append(critic_grad_norm)
 
             if self.mini_epoch % self.sac_config.update_actor_interval == 0:
                 actor_loss, alpha_loss, actor_grad_norm = self.update_actor(obs)
-                train_result["actor_loss"].append(actor_loss)
-                train_result["alpha_loss"].append(alpha_loss)
-                train_result["actor_grad_norm"].append(actor_grad_norm)
+                results["loss/actor"].append(actor_loss)
+                results["loss/alpha"].append(alpha_loss)
+                results["grad_norm/actor"].append(actor_grad_norm)
 
             if self.mini_epoch % self.sac_config.update_targets_interval == 0:
                 soft_update(self.critic_target, self.critic, self.sac_config.tau)
                 if not self.sac_config.no_tgt_actor:
                     soft_update(self.actor_target, self.actor, self.sac_config.tau)
-
-        train_result = {k: torch.stack(v) for k, v in train_result.items()}
-        return self.summary_stats(train_result)
-
-    def summary_stats(self, train_result):
-        metrics = {
-            "metrics/episode_rewards": self.metrics.episode_rewards.mean(),
-            "metrics/episode_lengths": self.metrics.episode_lengths.mean(),
-        }
-        log_dict = {
-            "train/epoch": self.epoch,
-            "train/mini_epoch": self.mini_epoch,
-            "train/alpha": self.get_alpha(scalar=True),
-            "train/loss/critic": torch.mean(train_result["critic_loss"]).item(),
-            "train/grad_norm/critic": torch.mean(train_result["critic_grad_norm"]).item(),
-        }
-        if "actor_loss" in train_result:
-            log_dict["train/loss/actor"] = torch.mean(train_result["actor_loss"]).item()
-            log_dict["train/loss/alpha"] = torch.mean(train_result["alpha_loss"]).item()
-            log_dict["train/grad_norm/actor"] = torch.mean(train_result["actor_grad_norm"]).item()
-        return {**metrics, **log_dict}
+        return results
 
     def get_alpha(self, detach=True, scalar=False):
         if self.sac_config.alpha is None:
