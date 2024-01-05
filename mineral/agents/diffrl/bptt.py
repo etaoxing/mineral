@@ -5,419 +5,411 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
-import sys, os
+import collections
+import os
+import re
+from copy import deepcopy
 
-from torch.nn.utils.clip_grad import clip_grad_norm_
-
-project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(project_dir)
-
-import time
 import numpy as np
-import copy
 import torch
-from tensorboardX import SummaryWriter
-import yaml
+import torch.nn as nn
 
-import dflex as df
+from ...common import normalizers
+from ...common.reward_shaper import RewardShaper
+from ...common.timer import Timer
+from ...common.tracker import Tracker
+from ..actorcritic_base import ActorCriticBase
+from . import models
+from .utils import grad_norm
 
-import envs
-import models.actor
-from optim.gd import GD
-from utils.common import *
-import utils.torch_utils as tu
-from utils.time_report import TimeReport
-from utils.average_meter import AverageMeter
-from utils.running_mean_std import RunningMeanStd
 
-class BPTT:
-    def __init__(self, cfg):
-        env_fn = getattr(envs, cfg["params"]["diff_env"]["name"])
-
-        seeding(cfg["params"]["general"]["seed"])
-
-        self.env = env_fn(num_envs = cfg["params"]["config"]["num_actors"], \
-                            device = cfg["params"]["general"]["device"], \
-                            render = cfg["params"]["general"]["render"], \
-                            seed = cfg["params"]["general"]["seed"], \
-                            episode_length=cfg["params"]["diff_env"].get("episode_length", 250), \
-                            stochastic_init = cfg["params"]["diff_env"].get("stochastic_env", False), \
-                            MM_caching_frequency = cfg["params"]['diff_env'].get('MM_caching_frequency', 1), \
-                            no_grad = False)
-
-        print('num_envs = ', self.env.num_envs)
-        print('num_actions = ', self.env.num_actions)
-        print('num_obs = ', self.env.num_obs)
+class BPTT(ActorCriticBase):
+    def __init__(self, full_cfg, **kwargs):
+        self.network_config = full_cfg.agent.network
+        self.bptt_config = full_cfg.agent.bptt
+        self.num_actors = self.bptt_config.num_actors
+        self.max_agent_steps = int(self.bptt_config.max_agent_steps)
+        super().__init__(full_cfg, **kwargs)
 
         self.num_envs = self.env.num_envs
         self.num_obs = self.env.num_obs
         self.num_actions = self.env.num_actions
         self.max_episode_length = self.env.episode_length
-        self.device = cfg["params"]["general"]["device"]
 
-        self.gamma = cfg['params']['config'].get('gamma', 0.99)
+        # --- BPTT parameters ---
+        self.gamma = self.bptt_config.get('gamma', 0.99)
 
-        self.steps_num = cfg["params"]["config"]["steps_num"]
-        self.max_epochs = cfg["params"]["config"]["max_epochs"]
-        self.actor_lr = float(cfg["params"]["config"]["actor_learning_rate"])
-        self.lr_schedule = cfg['params']['config'].get('lr_schedule', 'linear')
+        self.horizon_len = self.bptt_config.horizon_len
+        self.max_epochs = self.bptt_config.max_epochs
 
-        self.obs_rms = None
-        if cfg['params']['config'].get('obs_rms', False):
-            self.obs_rms = RunningMeanStd(shape = (self.num_obs), device = self.device)
-
-        self.rew_scale = cfg['params']['config'].get('rew_scale', 1.0)
-
-        self.name = cfg['params']['config'].get('name', "Ant")
-
-        self.truncate_grad = cfg["params"]["config"]["truncate_grads"]
-        self.grad_norm = cfg["params"]["config"]["grad_norm"]
-        
-        if cfg['params']['general']['train']:
-            self.log_dir = cfg["params"]["general"]["logdir"]
-            os.makedirs(self.log_dir, exist_ok = True)
-            # save config
-            save_cfg = copy.deepcopy(cfg)
-            if 'general' in save_cfg['params']:
-                deleted_keys = []
-                for key in save_cfg['params']['general'].keys():
-                    if key in save_cfg['params']['config']:
-                        deleted_keys.append(key)
-                for key in deleted_keys:
-                    del save_cfg['params']['general'][key]
-
-            yaml.dump(save_cfg, open(os.path.join(self.log_dir, 'cfg.yaml'), 'w'))
-            self.writer = SummaryWriter(os.path.join(self.log_dir, 'log'))
-            # save interval
-            self.save_interval = cfg["params"]["config"].get("save_interval", 500)
-            # stochastic inference
-            self.stochastic_evaluation = True
+        # --- Normalizers ---
+        rms_config = dict(eps=1e-5, correction=0, initial_count=1e-4, dtype=torch.float64)  # unbiased=False -> correction=0
+        if self.bptt_config.normalize_input:
+            self.obs_rms = {}
+            for k, v in self.obs_space.items():
+                if re.match(self.obs_rms_keys, k):
+                    self.obs_rms[k] = normalizers.RunningMeanStd(v, **rms_config)
+                else:
+                    self.obs_rms[k] = normalizers.Identity()
+            self.obs_rms = nn.ModuleDict(self.obs_rms).to(self.device)
         else:
-            self.stochastic_evaluation = not (cfg['params']['config']['player'].get('determenistic', False) or cfg['params']['config']['player'].get('deterministic', False))
-            self.steps_num = self.env.episode_length
+            self.obs_rms = None
 
-        # create actor critic network
-        self.algo = cfg["params"]["algo"]['name'] # choices: ['gd', 'adam', 'SGD']
+        # --- Model ---
+        obs_dim = self.obs_space['obs']
+        obs_dim = obs_dim[0] if isinstance(obs_dim, tuple) else obs_dim
+        assert obs_dim == self.env.num_obs
+        assert self.action_dim == self.env.num_actions
 
-        self.actor_name = cfg["params"]["network"].get("actor", 'ActorStochasticMLP') # choices: ['ActorDeterministicMLP', 'ActorStochasticMLP']
-        actor_fn = getattr(models.actor, self.actor_name)
-        self.actor = actor_fn(self.num_obs, self.num_actions, cfg['params']['network'], device = self.device)
-        
-        if cfg['params']['general']['train']:
-            self.save('init_policy')
-        
-        # initialize optimizer
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), betas = cfg['params']['config']['betas'], lr = self.actor_lr)
+        ActorCls = getattr(models, self.network_config.actor)
+        self.actor = ActorCls(obs_dim, self.action_dim, **self.network_config.get("actor_kwargs", {}))
+        self.actor.to(self.device)
+        print('Actor:', self.actor, '\n')
 
-        # counting variables
-        self.iter_count = 0
-        self.step_count = 0
+        # --- Optim ---
+        OptimCls = getattr(torch.optim, self.bptt_config.optim_type)
+        self.actor_optim = OptimCls(
+            self.actor.parameters(),
+            **self.bptt_config.get("actor_optim_kwargs", {}),
+        )
+        print('Actor Optim:', self.actor_optim, '\n')
+        self.actor_lr = self.actor_optim.defaults["lr"]
 
-        # loss variables
-        self.episode_length_his = []
-        self.episode_loss_his = []
-        self.episode_discounted_loss_his = []
-        self.episode_loss = torch.zeros(self.num_envs, dtype = torch.float32, device = self.device)
-        self.episode_discounted_loss = torch.zeros(self.num_envs, dtype = torch.float32, device = self.device)
-        self.episode_gamma = torch.ones(self.num_envs, dtype = torch.float32, device = self.device)
-        self.episode_length = torch.zeros(self.num_envs, dtype = int)
-        self.best_policy_loss = np.inf
-        self.actor_loss = np.inf
-        
-        # average meter
-        self.episode_loss_meter = AverageMeter(1, 100).to(self.device)
-        self.episode_discounted_loss_meter = AverageMeter(1, 100).to(self.device)
-        self.episode_length_meter = AverageMeter(1, 100).to(self.device)
+        # --- Replay Buffer ---
+        self.reward_shaper = RewardShaper(**self.bptt_config.reward_shaper)
 
-        # timer
-        self.time_report = TimeReport()
+        # --- Episode Metrics ---
+        self.episode_rewards = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        self.episode_lengths = torch.zeros(self.num_envs, dtype=int)
+        self.episode_discounted_rewards = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        self.episode_gamma = torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
+
+        self.episode_rewards_hist = []
+        self.episode_lengths_hist = []
+        self.episode_discounted_rewards_hist = []
+
+        tracker_len = 100
+        self.episode_rewards_tracker = Tracker(tracker_len)
+        self.episode_lengths_tracker = Tracker(tracker_len)
+        self.episode_discounted_rewards_tracker = Tracker(tracker_len)
+
+        # --- Timing ---
+        self.timer = Timer()
+
+    def get_actions(self, obs, sample=True):
+        # NOTE: obs_rms.normalize(...) occurs elsewhere
+        obs = obs['obs']
+        mu, sigma, distr = self.actor(obs)
+        if sample:
+            actions = distr.rsample()
+        else:
+            actions = mu
+        # clamp actions
+        actions = torch.tanh(actions)
+        return actions
 
     @torch.no_grad()
-    def evaluate_policy(self, num_games, deterministic = False):
-        episode_length_his = []
-        episode_loss_his = []
-        episode_discounted_loss_his = []
-        episode_loss = torch.zeros(self.num_envs, dtype = torch.float32, device = self.device)
-        episode_length = torch.zeros(self.num_envs, dtype = int)
-        episode_gamma = torch.ones(self.num_envs, dtype = torch.float32, device = self.device)
-        episode_discounted_loss = torch.zeros(self.num_envs, dtype = torch.float32, device = self.device)
+    def evaluate_policy(self, num_episodes, deterministic=False):
+        episode_rewards_hist = []
+        episode_lengths_hist = []
+        episode_discounted_rewards_hist = []
+        episode_rewards = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        episode_lengths = torch.zeros(self.num_envs, dtype=int)
+        episode_discounted_rewards = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        episode_gamma = torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
 
         obs = self.env.reset()
+        obs = self._convert_obs(obs)
 
-        games_cnt = 0
-        while games_cnt < num_games:
+        episodes = 0
+        while episodes < num_episodes:
             if self.obs_rms is not None:
-                obs = self.obs_rms.normalize(obs)
+                obs = {k: self.obs_rms[k].normalize(v) for k, v in obs.items()}
 
-            actions = self.actor(obs, deterministic = deterministic)
+            actions = self.get_actions(obs, sample=not deterministic)
+            obs, rew, done, _ = self.env.step(actions)
+            obs = self._convert_obs(obs)
 
-            obs, rew, done, _ = self.env.step(torch.tanh(actions))
+            done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
 
-            episode_length += 1
-
-            done_env_ids = done.nonzero(as_tuple = False).squeeze(-1)
-
-            episode_loss -= rew
-            episode_discounted_loss -= episode_gamma * rew
+            episode_rewards += rew
+            episode_lengths += 1
+            episode_discounted_rewards += episode_gamma * rew
             episode_gamma *= self.gamma
+
+            done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
             if len(done_env_ids) > 0:
                 for done_env_id in done_env_ids:
-                    print('loss = {:.2f}, len = {}'.format(episode_loss[done_env_id].item(), episode_length[done_env_id]))
-                    episode_loss_his.append(episode_loss[done_env_id].item())
-                    episode_discounted_loss_his.append(episode_discounted_loss[done_env_id].item())
-                    episode_length_his.append(episode_length[done_env_id].item())
-                    episode_loss[done_env_id] = 0.
-                    episode_discounted_loss[done_env_id] = 0.
-                    episode_length[done_env_id] = 0
-                    episode_gamma[done_env_id] = 1.
-                    games_cnt += 1
-        
-        mean_episode_length = np.mean(np.array(episode_length_his))
-        mean_policy_loss = np.mean(np.array(episode_loss_his))
-        mean_policy_discounted_loss = np.mean(np.array(episode_discounted_loss_his))
- 
-        return mean_policy_loss, mean_policy_discounted_loss, mean_episode_length
+                    print('rew = {:.2f}, len = {}'.format(episode_rewards[done_env_id].item(), episode_lengths[done_env_id]))
+                    episode_rewards_hist.append(episode_rewards[done_env_id].item())
+                    episode_lengths_hist.append(episode_lengths[done_env_id].item())
+                    episode_discounted_rewards_hist.append(episode_discounted_rewards[done_env_id].item())
+                    episode_rewards[done_env_id] = 0.0
+                    episode_lengths[done_env_id] = 0
+                    episode_discounted_rewards[done_env_id] = 0.0
+                    episode_gamma[done_env_id] = 1.0
+                    episodes += 1
+
+        mean_episode_rewards = np.mean(np.array(episode_rewards_hist))
+        mean_episode_lengths = np.mean(np.array(episode_lengths_hist))
+        mean_episode_discounted_rewards = np.mean(np.array(episode_discounted_rewards_hist))
+
+        return mean_episode_rewards, mean_episode_lengths, mean_episode_discounted_rewards
 
     def initialize_env(self):
         self.env.clear_grad()
         self.env.reset()
 
     def train(self):
-        self.start_time = time.time()
-
-        # timers
-        self.time_report.add_timer("algorithm")
-        self.time_report.add_timer("compute actor loss")
-        self.time_report.add_timer("forward simulation")
-        self.time_report.add_timer("backward simulation")
-        self.time_report.add_timer("actor training")
-
-        self.time_report.start_timer("algorithm")
-
+        # initializations
         self.initialize_env()
-        self.episode_loss = torch.zeros(self.num_envs, dtype = torch.float32, device = self.device)
-        self.episode_discounted_loss = torch.zeros(self.num_envs, dtype = torch.float32, device = self.device)
-        self.episode_length = torch.zeros(self.num_envs, dtype = int)
-        self.episode_gamma = torch.ones(self.num_envs, dtype = torch.float32, device = self.device)
-        
-        def actor_closure():
-            self.actor_optimizer.zero_grad()
 
-            self.time_report.start_timer("compute actor loss")
-            
-            self.time_report.start_timer("forward simulation")
-            actor_loss = self.compute_actor_loss()
-            self.time_report.end_timer("forward simulation")
+        while self.epoch < self.max_epochs:
+            self.epoch += 1
 
-            self.time_report.start_timer("backward simulation")
-            actor_loss.backward()
-            self.time_report.end_timer("backward simulation")
-
-            with torch.no_grad():
-                self.grad_norm_before_clip = tu.grad_norm(self.actor.parameters())
-                if self.truncate_grad:
-                    clip_grad_norm_(self.actor.parameters(), self.grad_norm)
-                self.grad_norm_after_clip = tu.grad_norm(self.actor.parameters()) 
-                if torch.isnan(self.grad_norm_before_clip):
-                    # JIE
-                    print('here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! NaN gradient')
-                    import IPython
-                    IPython.embed()
-                    for params in self.actor.parameters():
-                        params.grad.zero_()
-                if torch.isnan(self.grad_norm_before_clip) or self.grad_norm_before_clip > 1000000.:
-                    self.save("nan_policy")
-
-            self.time_report.end_timer("compute actor loss")
-
-            return actor_loss
-
-        for epoch in range(self.max_epochs):
-            time_start_epoch = time.time()
-
-            if self.lr_schedule == 'linear':
-                actor_lr = (1e-5 - self.actor_lr) * float(epoch / self.max_epochs) + self.actor_lr
-                for param_group in self.actor_optimizer.param_groups:
+            # learning rate schedule
+            if self.bptt_config.lr_schedule == 'linear':
+                actor_lr = (1e-5 - self.actor_lr) * float(self.epoch / self.max_epochs) + self.actor_lr
+                for param_group in self.actor_optim.param_groups:
                     param_group['lr'] = actor_lr
                 lr = actor_lr
-            else:
+            elif self.bptt_config.lr_schedule == 'constant':
                 lr = self.actor_lr
+            else:
+                raise NotImplementedError(self.bptt_config.lr_schedule)
 
             # train actor
-            self.time_report.start_timer("actor training")
-            self.actor_optimizer.step(actor_closure).detach().item()
-            self.time_report.end_timer("actor training")
+            self.timer.start("train/update_actor")
+            actor_results = self.update_actor()
+            self.timer.end("train/update_actor")
 
-            self.iter_count += 1
-            
-            time_end_epoch = time.time()
+            # gather metrics
+            results = {**actor_results}
+            metrics = {k: torch.mean(torch.stack(v)).item() for k, v in results.items()}
+            metrics = {"epoch": self.epoch, "lr": lr, **metrics}
+            metrics = {f"train_stats/{k}": v for k, v in metrics.items()}
 
-            # logging
-            time_elapse = time.time() - self.start_time
-            self.writer.add_scalar('lr/iter', lr, self.iter_count)
-            self.writer.add_scalar('actor_loss/step', self.actor_loss, self.step_count)
-            self.writer.add_scalar('actor_loss/iter', self.actor_loss, self.iter_count)
-            if len(self.episode_loss_his) > 0:
-                mean_episode_length = self.episode_length_meter.get_mean()
-                mean_policy_loss = self.episode_loss_meter.get_mean()
-                mean_policy_discounted_loss = self.episode_discounted_loss_meter.get_mean()
+            timings_total_names = ("train/update_actor", "train/make_critic_dataset", "train/update_critic")
+            timings = self.timer.stats(step=self.agent_steps, total_names=timings_total_names, reset=False)
+            metrics = {**metrics, **{f"train_timings/{k}": v for k, v in timings.items()}}
 
-                if mean_policy_loss < self.best_policy_loss:
-                    print_info("save best policy with loss {:.2f}".format(mean_policy_loss))
-                    self.save()
-                    self.best_policy_loss = mean_policy_loss
+            if len(self.episode_rewards_hist) > 0:
+                mean_episode_rewards = self.episode_rewards_tracker.mean()
+                mean_episode_lengths = self.episode_lengths_tracker.mean()
+                mean_episode_discounted_rewards = self.episode_discounted_rewards_tracker.mean()
 
-                # self.save("latest_policy")
-                self.writer.add_scalar('policy_loss/step', mean_policy_loss, self.step_count)
-                self.writer.add_scalar('policy_loss/time', mean_policy_loss, time_elapse)
-                self.writer.add_scalar('policy_loss/iter', mean_policy_loss, self.iter_count)
-                self.writer.add_scalar('rewards/step', -mean_policy_loss, self.step_count)
-                self.writer.add_scalar('rewards/time', -mean_policy_loss, time_elapse)
-                self.writer.add_scalar('rewards/iter', -mean_policy_loss, self.iter_count)
-                self.writer.add_scalar('policy_discounted_loss/step', mean_policy_discounted_loss, self.step_count)
-                self.writer.add_scalar('policy_discounted_loss/iter', mean_policy_discounted_loss, self.iter_count)
-                self.writer.add_scalar('best_policy_loss/step', self.best_policy_loss, self.step_count)
-                self.writer.add_scalar('best_policy_loss/iter', self.best_policy_loss, self.iter_count)
-                self.writer.add_scalar('episode_lengths/iter', mean_episode_length, self.iter_count)
-                self.writer.add_scalar('episode_lengths/step', mean_episode_length, self.step_count)
-                self.writer.add_scalar('episode_lengths/time', mean_episode_length, time_elapse)
+                episode_metrics = {
+                    "train_metrics/episode_rewards": mean_episode_rewards,
+                    "train_metrics/episode_lengths": mean_episode_lengths,
+                    "train_metrics/episode_discounted_rewards": mean_episode_discounted_rewards,
+                }
+                metrics.update(episode_metrics)
             else:
-                mean_policy_loss = np.inf
-                mean_policy_discounted_loss = np.inf
-                mean_episode_length = 0
+                mean_episode_rewards = -np.inf
+                mean_episode_lengths = 0
+                mean_episode_discounted_rewards = -np.inf
 
-            print('iter {}: ep loss {:.2f}, ep discounted loss {:.2f}, ep len {:.1f}, fps total {:.2f}, grad norm before clip {:.2f}, grad norm after clip {:.2f}'.format(\
-                    self.iter_count, mean_policy_loss, mean_policy_discounted_loss, mean_episode_length, self.steps_num * self.num_envs / (time_end_epoch - time_start_epoch), self.grad_norm_before_clip, self.grad_norm_after_clip))
+            self.writer.add(self.agent_steps, metrics)
+            self.writer.write()
 
-            self.writer.flush()
-        
-            if self.save_interval > 0 and (self.iter_count % self.save_interval == 0):
-                self.save(self.name + "policy_iter{}_reward{:.3f}".format(self.iter_count, -mean_policy_loss))
+            self._checkpoint_save(mean_episode_rewards)
 
-        self.time_report.end_timer("algorithm")
+            if self.print_every > 0 and (self.epoch + 1) % self.print_every == 0:
+                print(
+                    f'Epoch: {self.epoch} |',
+                    f'Agent Steps: {int(self.agent_steps):,} |',
+                    f'SPS: {timings["lastrate"]:.2f} |',
+                    f'Best: {self.best_stat if self.best_stat is not None else -float("inf"):.2f} |',
+                    f'Stats:',
+                    f'ep_rewards {mean_episode_rewards:.2f},',
+                    f'ep_lenths {mean_episode_lengths:.2f},',
+                    f'ep_discounted_rewards {mean_episode_discounted_rewards:.2f},',
+                    f'actor_loss {metrics["train_stats/actor_loss"]:.4f},',
+                    f'grad_norm_before_clip {metrics["train_stats/grad_norm_before_clip"]:.2f},',
+                    f'grad_norm_after_clip {metrics["train_stats/grad_norm_after_clip"]:.2f},',
+                    f'\b\b |',
+                )
 
-        self.time_report.report()
-        
-        self.save('final_policy')
+        timings = self.timer.stats(step=self.agent_steps)
+        print(timings)
+
+        self.save(os.path.join(self.ckpt_dir, 'final.pth'))
 
         # save reward/length history
-        self.episode_loss_his = np.array(self.episode_loss_his)
-        self.episode_discounted_loss_his = np.array(self.episode_discounted_loss_his)
-        self.episode_length_his = np.array(self.episode_length_his)
-        np.save(open(os.path.join(self.log_dir, 'episode_loss_his.npy'), 'wb'), self.episode_loss_his)
-        np.save(open(os.path.join(self.log_dir, 'episode_discounted_loss_his.npy'), 'wb'), self.episode_discounted_loss_his)
-        np.save(open(os.path.join(self.log_dir, 'episode_length_his.npy'), 'wb'), self.episode_length_his)
+        self.episode_rewards_hist = np.array(self.episode_rewards_hist)
+        self.episode_lengths_hist = np.array(self.episode_lengths_hist)
+        self.episode_discounted_rewards_hist = np.array(self.episode_discounted_rewards_hist)
+        np.save(open(os.path.join(self.logdir, 'ep_rewards_hist.npy'), 'wb'), self.episode_rewards_hist)
+        np.save(open(os.path.join(self.logdir, 'ep_lengths_hist.npy'), 'wb'), self.episode_lengths_hist)
+        np.save(open(os.path.join(self.logdir, 'ep_discounted_rewards_hist.npy'), 'wb'), self.episode_discounted_rewards_hist)
 
-        # evaluate the final policy's performance
-        self.run(self.num_envs)
+    def update_actor(self):
+        results = collections.defaultdict(list)
 
-        self.close()
+        def actor_closure():
+            self.actor_optim.zero_grad()
+            self.timer.start("train/actor_closure/actor_loss")
 
-    def compute_actor_loss(self, deterministic = False):
-        rew_acc = torch.zeros((self.steps_num + 1, self.num_envs), dtype = torch.float32, device = self.device)
-        gamma = torch.ones(self.num_envs, dtype = torch.float32, device = self.device)
-        
-        actor_loss = torch.tensor(0., dtype = torch.float32, device = self.device)
+            self.timer.start("train/actor_closure/forward_sim")
+            actor_loss = self.compute_actor_loss()
+            self.timer.end("train/actor_closure/forward_sim")
+
+            self.timer.start("train/actor_closure/backward_sim")
+            actor_loss.backward()
+            self.timer.end("train/actor_closure/backward_sim")
+
+            with torch.no_grad():
+                grad_norm_before_clip = grad_norm(self.actor.parameters())
+                if self.bptt_config.truncate_grads:
+                    nn.utils.clip_grad_norm_(self.actor.parameters(), self.bptt_config.max_grad_norm)
+                grad_norm_after_clip = grad_norm(self.actor.parameters())
+
+                if torch.isnan(grad_norm_before_clip):
+                    print('NaN gradient')
+                    raise ValueError
+                    # # JIE
+                    # print('here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! NaN gradient')
+                    # import IPython
+                    # IPython.embed()
+                    # for params in self.actor.parameters():
+                    #     params.grad.zero_()
+
+            results["actor_loss"].append(actor_loss)
+            results["grad_norm_before_clip"].append(grad_norm_before_clip)
+            results["grad_norm_after_clip"].append(grad_norm_after_clip)
+            self.timer.end("train/actor_closure/actor_loss")
+            return actor_loss
+
+        self.actor_optim.step(actor_closure)
+        return results
+
+    def compute_actor_loss(self, deterministic=False):
+        rew_acc = torch.zeros((self.horizon_len + 1, self.num_envs), dtype=torch.float32, device=self.device)
+        gamma = torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
 
         with torch.no_grad():
             if self.obs_rms is not None:
-                obs_rms = copy.deepcopy(self.obs_rms)
+                obs_rms = deepcopy(self.obs_rms)
 
+        # initialize trajectory to cut off gradients between episodes.
         obs = self.env.initialize_trajectory()
-        
+        obs = self._convert_obs(obs)
+
         if self.obs_rms is not None:
             # update obs rms
             with torch.no_grad():
-                self.obs_rms.update(obs)
+                for k, v in obs.items():
+                    self.obs_rms[k].update(v)
             # normalize the current obs
-            obs = obs_rms.normalize(obs)
+            obs = {k: obs_rms[k].normalize(v) for k, v in obs.items()}
 
-        for i in range(self.steps_num):
-            actions = self.actor(obs, deterministic = deterministic)
+        # collect trajectories and compute actor loss
+        actor_loss = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        for i in range(self.horizon_len):
+            # take env step
+            actions = self.get_actions(obs, sample=not deterministic)
+            obs, rew, done, extra_info = self.env.step(actions)
+            obs = self._convert_obs(obs)
 
-            obs, rew, done, extra_info = self.env.step(torch.tanh(actions))
-            
             with torch.no_grad():
                 raw_rew = rew.clone()
-            
             # scale the reward
-            rew = rew * self.rew_scale
-            
+            rew = self.reward_shaper(rew)
+
+            # update episode metrics
+            with torch.no_grad():
+                self.episode_rewards += raw_rew
+                self.episode_lengths += 1
+                self.episode_discounted_rewards += self.episode_gamma * raw_rew
+                self.episode_gamma *= self.gamma
+
             if self.obs_rms is not None:
                 # update obs rms
                 with torch.no_grad():
-                    self.obs_rms.update(obs)
+                    for k, v in obs.items():
+                        self.obs_rms[k].update(v)
                 # normalize the current obs
-                obs = obs_rms.normalize(obs)
+                obs = {k: obs_rms[k].normalize(v) for k, v in obs.items()}
 
-            self.episode_length += 1
+            done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
 
-            done_env_ids = done.nonzero(as_tuple = False).squeeze(-1)
-
-            # JIE
+            # compute actor loss
             rew_acc[i + 1, :] = rew_acc[i, :] + gamma * rew
-
-            if i < self.steps_num - 1:
-                actor_loss = actor_loss + (- rew_acc[i + 1, done_env_ids]).sum()
+            if i < self.horizon_len - 1:
+                a_loss = -rew_acc[i + 1, done_env_ids]
+                actor_loss = actor_loss + a_loss.sum()
             else:
                 # terminate all envs at the end of optimization iteration
-                actor_loss = actor_loss + (- rew_acc[i + 1, :]).sum()
-        
+                a_loss = -rew_acc[i + 1, :]
+                actor_loss = actor_loss + a_loss.sum()
+
             # compute gamma for next step
             gamma = gamma * self.gamma
 
             # clear up gamma and rew_acc for done envs
-            gamma[done_env_ids] = 1.
-            rew_acc[i + 1, done_env_ids] = 0.
+            gamma[done_env_ids] = 1.0
+            rew_acc[i + 1, done_env_ids] = 0.0
 
-            # collect episode loss
+            # collect episode metrics
             with torch.no_grad():
-                self.episode_loss -= raw_rew
-                self.episode_discounted_loss -= self.episode_gamma * raw_rew
-                self.episode_gamma *= self.gamma
                 if len(done_env_ids) > 0:
-                    self.episode_loss_meter.update(self.episode_loss[done_env_ids])
-                    self.episode_discounted_loss_meter.update(self.episode_discounted_loss[done_env_ids])
-                    self.episode_length_meter.update(self.episode_length[done_env_ids])
+                    done_env_ids = done_env_ids.detach().cpu()
+                    self.episode_rewards_tracker.update(self.episode_rewards[done_env_ids])
+                    self.episode_lengths_tracker.update(self.episode_lengths[done_env_ids])
+                    self.episode_discounted_rewards_tracker.update(self.episode_discounted_rewards[done_env_ids])
+
                     for done_env_id in done_env_ids:
-                        if (self.episode_loss[done_env_id] > 1e6 or self.episode_loss[done_env_id] < -1e6):
-                            print('ep loss error')
-                            import IPython
-                            IPython.embed()
-                        self.episode_loss_his.append(self.episode_loss[done_env_id].item())
-                        self.episode_discounted_loss_his.append(self.episode_discounted_loss[done_env_id].item())
-                        self.episode_length_his.append(self.episode_length[done_env_id].item())
-                        self.episode_loss[done_env_id] = 0.
-                        self.episode_discounted_loss[done_env_id] = 0.
-                        self.episode_length[done_env_id] = 0
-                        self.episode_gamma[done_env_id] = 1.
+                        if self.episode_rewards[done_env_id] > 1e6 or self.episode_rewards[done_env_id] < -1e6:
+                            print('ep_rewards error')
+                            raise ValueError
+                        self.episode_rewards_hist.append(self.episode_rewards[done_env_id].item())
+                        self.episode_lengths_hist.append(self.episode_lengths[done_env_id].item())
+                        self.episode_discounted_rewards_hist.append(self.episode_discounted_rewards[done_env_id].item())
+                        self.episode_rewards[done_env_id] = 0.0
+                        self.episode_lengths[done_env_id] = 0
+                        self.episode_discounted_rewards[done_env_id] = 0.0
+                        self.episode_gamma[done_env_id] = 1.0
 
-        actor_loss /= self.steps_num * self.num_envs
-            
-        self.actor_loss = actor_loss.detach().cpu().item()
-            
-        self.step_count += self.steps_num * self.num_envs
+        self.agent_steps += self.horizon_len * self.num_envs
 
+        actor_loss /= self.horizon_len * self.num_envs
         return actor_loss
-    
-    @torch.no_grad()
-    def run(self, num_games):
-        mean_policy_loss, mean_policy_discounted_loss, mean_episode_length = self.evaluate_policy(num_games = num_games, deterministic = not self.stochastic_evaluation)
-        print_info('mean episode loss = {}, mean discounted loss = {}, mean episode length = {}'.format(mean_policy_loss, mean_policy_discounted_loss, mean_episode_length))
-            
-    def play(self, cfg):
-        self.load(cfg['params']['general']['checkpoint'])
-        self.run(cfg['params']['config']['player']['games_num'])
-        
-    def save(self, filename = None):
-        if filename is None:
-            filename = 'best_policy'
-        torch.save([self.actor, self.obs_rms], os.path.join(self.log_dir, "{}.pt".format(filename)))
-    
-    def load(self, path):
-        checkpoint = torch.load(path)
-        self.actor = checkpoint[0].to(self.device)
-        self.obs_rms = checkpoint[1].to(self.device)
-        
-    def close(self):
-        self.writer.close()
+
+    def eval(self):
+        mean_episode_rewards, mean_episode_lengths, mean_episode_discounted_rewards = self.evaluate_policy(
+            num_episodes=self.num_actors,
+            deterministic=True,
+        )
+        print(
+            f'mean ep_rewards = {mean_episode_rewards},',
+            f'mean ep_lengths = {mean_episode_lengths}',
+            f'mean ep_discounted_rewards = {mean_episode_discounted_rewards},',
+        )
+
+    def set_train(self):
+        pass
+
+    def set_eval(self):
+        pass
+
+    def save(self, f):
+        ckpt = {
+            'actor': self.actor.state_dict(),
+            'obs_rms': self.obs_rms.state_dict() if self.bptt_config.normalize_input else None,
+        }
+        torch.save(ckpt, f)
+
+    def load(self, f, ckpt_keys=''):
+        ckpt = torch.load(f, map_location=self.device)
+        all_ckpt_keys = ('actor', 'obs_rms')
+        for k in all_ckpt_keys:
+            if not re.match(ckpt_keys, k):
+                print(f'Warning: ckpt skipped loading `{k}`')
+                continue
+            if k == 'obs_rms' and (not self.bptt_config.normalize_input):
+                continue
+
+            if hasattr(getattr(self, k), 'load_state_dict'):
+                getattr(self, k).load_state_dict(ckpt[k])
+            else:
+                setattr(self, k, ckpt[k])

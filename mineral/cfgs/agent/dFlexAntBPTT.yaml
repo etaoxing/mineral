@@ -1,0 +1,41 @@
+seed: ${..seed}
+algo: BPTT
+
+print_every: 1
+ckpt_every: 100
+
+network:
+  encoder: null
+
+  actor: Actor
+  actor_kwargs:
+    mlp_kwargs:
+      units: [128, 64, 32]
+      norm_type: LayerNorm
+      act_type: ELU
+
+bptt:
+  multi_gpu: ${...multi_gpu}
+  num_actors: ${...task.env.numEnvs}
+
+  reward_shaper:
+    fn: scale
+    scale: 1.0
+
+  max_agent_steps: 5e6
+  horizon_len: 32
+  max_epochs: 2000
+
+  optim_type: Adam
+  actor_optim_kwargs:
+    # lr: 2e-3
+    lr: 4e-3
+    betas: [0.7, 0.95]
+  lr_schedule: linear  # linear | constant
+  max_grad_norm: 1.0
+  truncate_grads: True
+
+  gamma: 0.99
+
+  normalize_input: True
+  normalize_ret: False
