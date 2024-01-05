@@ -145,13 +145,13 @@ class BC(ActorCriticBase):
 
             for i, batch in enumerate(self.train_dataloader):
                 self.mini_epoch += 1
-                train_result = self.update_model(batch)
-                metrics = {
-                    "epoch": self.epoch,
-                    "mini_epoch": self.mini_epoch,
-                    **train_result,
-                }
-                metrics = {f"train/{k}": v for k, v in metrics.items() if v is not None}
+                results = self.update_model(batch)
+
+                # gather train metrics
+                metrics = {k: torch.stack(v).mean().item() for k, v in results.items()}
+                metrics.update({"epoch": self.epoch, "mini_epoch": self.mini_epoch})
+                metrics = {f"train_stats/{k}": v for k, v in metrics.items() if v is not None}
+
                 self.writer.add(self.mini_epoch, metrics)
                 self.writer.write()
 
@@ -169,7 +169,7 @@ class BC(ActorCriticBase):
         self.save(os.path.join(self.ckpt_dir, 'final.pth'))
 
     def update_model(self, batch):
-        train_result = collections.defaultdict(list)
+        results = collections.defaultdict(list)
 
         obs, action, reward, done, info = batch
 
@@ -200,15 +200,14 @@ class BC(ActorCriticBase):
             grad_norm = None
         self.optim.step()
 
-        train_result["loss/total"].append(loss)
+        results["loss/total"].append(loss)
         for k, v in losses.items():
             if v is not None:
-                train_result[f"loss/{k}"].append(v)
+                results[f"loss/{k}"].append(v)
         if grad_norm is not None:
-            train_result["grad_norm/all"].append(grad_norm)
+            results["grad_norm/all"].append(grad_norm)
 
-        train_result = {k: torch.stack(v).mean().item() for k, v in train_result.items()}
-        return train_result
+        return results
 
     def eval(self):
         self.set_eval()
@@ -228,8 +227,8 @@ class BC(ActorCriticBase):
             print(f"Evaluated {eval_episodes} / {total_eval_episodes} episodes")
 
         eval_metrics = {
-            "metrics/episode_rewards": self.metrics.episode_rewards.mean(),
-            "metrics/episode_lengths": self.metrics.episode_lengths.mean(),
+            "eval_scores/episode_rewards": self.metrics.episode_rewards.mean(),
+            "eval_scores/episode_lengths": self.metrics.episode_lengths.mean(),
         }
         eval_metrics = self.metrics.result(eval_metrics)
         self.writer.add(self.mini_epoch, eval_metrics)
